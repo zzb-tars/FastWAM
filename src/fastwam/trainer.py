@@ -40,6 +40,7 @@ class Wan22Trainer:
         max_steps = cfg.max_steps
         self.max_steps = int(max_steps) if max_steps is not None else None
         self.log_every = int(cfg.log_every)
+        self.heartbeat_every_seconds = float(cfg.get("heartbeat_every_seconds", 60.0))
         self.save_every = int(cfg.save_every)
         self.eval_every = int(cfg.eval_every)
         self.eval_num_inference_steps = int(cfg.eval_num_inference_steps)
@@ -655,6 +656,7 @@ class Wan22Trainer:
         data_iter = iter(self.train_loader)
         self.run_start_step = self.global_step
         self.run_start_time = time.perf_counter()
+        last_heartbeat_time = 0.0
 
         while self.global_step < self.max_steps:
             try:
@@ -666,6 +668,21 @@ class Wan22Trainer:
                 self.train_sampler.clear_resume_batch_offset()
                 data_iter = iter(self.train_loader)
                 continue
+
+            if self.accelerator.is_main_process and self.heartbeat_every_seconds > 0:
+                now = time.perf_counter()
+                if (now - last_heartbeat_time) >= self.heartbeat_every_seconds:
+                    micro_step = ((self.batch_in_epoch - 1) % self.gradient_accumulation_steps) + 1
+                    logger.info(
+                        "[alive] epoch=%d step=%d/%d batch_in_epoch=%d accum=%d/%d",
+                        self.epoch,
+                        self.global_step,
+                        self.max_steps,
+                        self.batch_in_epoch,
+                        micro_step,
+                        self.gradient_accumulation_steps,
+                    )
+                    last_heartbeat_time = now
 
             with self.accelerator.accumulate(self.model):
                 train_model = self.model if hasattr(self.model, "training_loss") else self.accelerator.unwrap_model(self.model)
