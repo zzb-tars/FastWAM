@@ -4,6 +4,16 @@ set -euo pipefail
 NPROC_PER_NODE="${1:?Usage: bash scripts/train.sh <nproc_per_node> [hydra_overrides...]}"
 shift
 
+if [[ -n "${GPU_IDS:-}" ]]; then
+  export CUDA_VISIBLE_DEVICES="${GPU_IDS}"
+elif [[ -n "${GPU_ID:-}" ]]; then
+  export CUDA_VISIBLE_DEVICES="${GPU_ID}"
+fi
+
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  echo "[gpu_bind] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+fi
+
 EXTRA_ARGS=("$@")
 NUM_MACHINES="${NNODES:-1}"
 MACHINE_RANK="${NODE_RANK:-0}"
