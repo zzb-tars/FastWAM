@@ -19,6 +19,10 @@ run_libero_eval() {
     # Basic configuration
     ROOT_DIR=${ROOT_DIR:-"$(pwd)"}
     export ROOT_DIR
+    WORKER_PYTHON=${WORKER_PYTHON:-"python"}
+    export WORKER_PYTHON
+    WORKER_PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-""}
+    export WORKER_PYTORCH_CUDA_ALLOC_CONF
     # Generate a unique run_id
     RUN_ID=${RUN_ID:-"eval_$(date +%Y%m%d_%H%M%S)"}
     export RUN_ID
@@ -336,8 +340,9 @@ run_libero_eval() {
         tmux select-pane -t $SESSION_NAME:$pane_info 2>/dev/null
         tmux send-keys -t $SESSION_NAME:$pane_info "clear" C-m 2>/dev/null
         tmux send-keys -t $SESSION_NAME:$pane_info "source ~/.bashrc && cd $ROOT_DIR && export EXP_NAME=$EXP_NAME && \
+            export PYTORCH_CUDA_ALLOC_CONF='$WORKER_PYTORCH_CUDA_ALLOC_CONF' && \
             STATUS_FILE='$status_file' LOG_FILE='$log_file' RESULT_FILE='$result_file' && \
-            CUDA_VISIBLE_DEVICES=$gpu_id python experiments/libero/eval_libero_single.py \
+            CUDA_VISIBLE_DEVICES=$gpu_id \"$WORKER_PYTHON\" experiments/libero/eval_libero_single.py \
             task=$CONFIG ckpt=$CKPT \
             EVALUATION.task_suite_name=$suite EVALUATION.task_id=$task_id gpu_id=$gpu_id \
             EVALUATION.num_trials=$NUM_TRIALS EVALUATION.output_dir=$OUTPUT_DIR $EXTRA_ARGS > \"\$LOG_FILE\" 2>&1; \

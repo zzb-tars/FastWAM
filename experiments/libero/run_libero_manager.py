@@ -1,6 +1,7 @@
 import os
 import shlex
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -83,6 +84,7 @@ def run_evaluation(
         {
             "CONFIG": task_choice,
             "CKPT": ckpt,
+            "WORKER_PYTHON": sys.executable,
             "NUM_GPUS": str(num_gpus),
             "NUM_TRIALS": str(num_trials),
             "MAX_TASKS_PER_GPU": str(max_tasks_per_gpu),
