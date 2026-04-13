@@ -1,7 +1,7 @@
 PATH=/mnt/data/miniconda3/envs/fastwam_train_v0/bin:$PATH GPU_IDS=3,5 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True bash scripts/train_zero2_offload.sh 2 task=libero_uncond_2cam224_1e-4 batch_size=1 gradient_accumulation_steps=8 num_workers=4
 
 
-GPU_IDS=3,5 bash scripts/train_zero2_offload.sh 2 task=libero_uncond_2cam224_1e-4 batch_size=1 gradient_accumulation_steps=8 num_workers=4
+GPU_IDS=3,5 bash scripts/train_zero2.sh 2 task=libero_uncond_2cam224_1e-4 batch_size=1 gradient_accumulation_steps=8 num_workers=4
 
 
 torchrun --standalone --nproc_per_node=8 scripts/precompute_text_embeds.py task=libero_uncond_2cam224_1e-4
