@@ -60,6 +60,7 @@ from .datasets.utils import (
     load_info,
     load_stats,
     load_tasks,
+    normalize_stats_shapes,
     load_annotations,
     validate_episode_buffer,
     validate_frame,
@@ -108,16 +109,30 @@ class LeRobotDatasetMetadata:
         self.info = load_info(self.root)
         # TODO add new check
         # check_version_compatibility(self.repo_id, self._version, CODEBASE_VERSION)
+        # 兼容点1：tasks 元数据已在 load_tasks() 内做 v2.1(jsonl) / v3.0(parquet) 双格式兼容。
         self.tasks, self.task_to_task_index = load_tasks(self.root)
         if (self.root / "annotations").exists():
             self.annotations = load_annotations(self.root)
+        # 兼容点2：episodes 元数据已在 load_episodes() 内做 v2.1(jsonl) / v3.0(chunk parquet) 双格式兼容。
         self.episodes = load_episodes(self.root)
         if self._version < packaging.version.parse("v2.1"):
             self.stats = load_stats(self.root)
             self.episodes_stats = backward_compatible_episodes_stats(self.stats, self.episodes)
         else:
+            # 兼容点3：v2.1/v3.0 的 episodes_stats 来源不同，这里统一读取后做形状标准化，
+            # 避免后续 aggregate_stats 因 dtype/shape 不一致失败。
             self.episodes_stats = load_episodes_stats(self.root)
-            self.stats = aggregate_stats(list(self.episodes_stats.values()))
+            self.episodes_stats = {
+                ep_idx: normalize_stats_shapes(ep_stats, self.features)
+                for ep_idx, ep_stats in self.episodes_stats.items()
+            }
+            if len(self.episodes_stats) > 0:
+                self.stats = aggregate_stats(list(self.episodes_stats.values()))
+            else:
+                # v3.0 datasets may not expose legacy episodes_stats jsonl.
+                self.stats = load_stats(self.root)
+        # 兼容点4：最终再对聚合后的全局 stats 做一次标准化，确保下游归一化逻辑输入一致。
+        self.stats = normalize_stats_shapes(self.stats, self.features)
 
     def pull_from_repo(
         self,
@@ -139,13 +154,38 @@ class LeRobotDatasetMetadata:
         return packaging.version.parse(self.info["codebase_version"])
 
     def get_data_file_path(self, ep_index: int) -> Path:
-        ep_chunk = self.get_episode_chunk(ep_index)
-        fpath = self.data_path.format(episode_chunk=ep_chunk, episode_index=ep_index)
+        # 兼容点5：v3.0 常用 shard 组织（chunk_index/file_index），
+        # v2.1 常用 episode_index 路径模板。这里按 metadata 字段自动选择路径格式。
+        episode = self.episodes[int(ep_index)]
+        if "data/chunk_index" in episode and "data/file_index" in episode:
+            fpath = self.data_path.format(
+                chunk_index=int(episode["data/chunk_index"]),
+                file_index=int(episode["data/file_index"]),
+                episode_chunk=self.get_episode_chunk(ep_index),
+                episode_index=ep_index,
+            )
+        else:
+            ep_chunk = self.get_episode_chunk(ep_index)
+            fpath = self.data_path.format(episode_chunk=ep_chunk, episode_index=ep_index)
         return Path(fpath)
 
     def get_video_file_path(self, ep_index: int, vid_key: str) -> Path:
-        ep_chunk = self.get_episode_chunk(ep_index)
-        fpath = self.video_path.format(episode_chunk=ep_chunk, video_key=vid_key, episode_index=ep_index)
+        # 兼容点6：视频路径同理，优先使用 v3.0 的 shard 索引字段，
+        # 若不存在则回退到 v2.1 的 episode_chunk/episode_index 路径模板。
+        episode = self.episodes[int(ep_index)]
+        chunk_key = f"videos/{vid_key}/chunk_index"
+        file_key = f"videos/{vid_key}/file_index"
+        if chunk_key in episode and file_key in episode:
+            fpath = self.video_path.format(
+                video_key=vid_key,
+                chunk_index=int(episode[chunk_key]),
+                file_index=int(episode[file_key]),
+                episode_chunk=self.get_episode_chunk(ep_index),
+                episode_index=ep_index,
+            )
+        else:
+            ep_chunk = self.get_episode_chunk(ep_index)
+            fpath = self.video_path.format(episode_chunk=ep_chunk, video_key=vid_key, episode_index=ep_index)
         return Path(fpath)
 
     def get_episode_chunk(self, ep_index: int) -> int:
@@ -597,14 +637,16 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
     def get_episodes_file_paths(self) -> list[Path]:
         episodes = self.episodes if self.episodes is not None else list(range(self.meta.total_episodes))
-        fpaths = [str(self.meta.get_data_file_path(ep_idx)) for ep_idx in episodes]
+        # 兼容点7：v3.0 可能多个 episode 映射到同一个 parquet shard，
+        # 因此这里去重，避免重复校验/重复加载同一文件。
+        fpaths = sorted({str(self.meta.get_data_file_path(ep_idx)) for ep_idx in episodes})
         if len(self.meta.video_keys) > 0:
-            video_files = [
+            video_files = {
                 str(self.meta.get_video_file_path(ep_idx, vid_key))
                 for vid_key in self.meta.video_keys
                 for ep_idx in episodes
-            ]
-            fpaths += video_files
+            }
+            fpaths += sorted(video_files)
 
         return fpaths
 
@@ -614,8 +656,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
             path = str(self.root / "data")
             hf_dataset = load_dataset("parquet", data_dir=path, split="train")
         else:
-            files = [str(self.root / self.meta.get_data_file_path(ep_idx)) for ep_idx in self.episodes]
+            # 兼容点8：显式 episode 子集时，先按文件路径集合去重（适配 v3 shard）。
+            files = sorted({str(self.root / self.meta.get_data_file_path(ep_idx)) for ep_idx in self.episodes})
             hf_dataset = load_dataset("parquet", data_files=files, split="train")
+            if self.meta._version >= packaging.version.parse("v3.0"):
+                # 兼容点9：v3.0 一个 shard 内可能包含多个 episode，
+                # 仅靠 data_files 不能精确筛到目标 episode，需要二次按 episode_index 过滤。
+                allowed_eps = set(int(ep) for ep in self.episodes)
+                hf_dataset = hf_dataset.filter(lambda x: int(x["episode_index"]) in allowed_eps)
 
         # TODO(aliberts): hf_dataset.set_format("torch")
         hf_dataset.set_transform(hf_transform_to_torch)
@@ -717,7 +765,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         ep_start = self.episode_data_index["from"][episode_id].item()
         ep_end = self.episode_data_index["to"][episode_id].item()
         q_idx = list(range(ep_start, ep_end))
-        # selected_data = self.hf_dataset.select(q_idx)
+        # 兼容点10：通过 hf_dataset 索引区间拿 episode 数据，不再依赖
+        # "一个 episode 对应一个 parquet 文件" 的旧假设（v3 下该假设不成立）。
         selected_data = self.hf_dataset[q_idx]
         res_keys = self.meta.features.keys() - set(self.meta.video_keys)
         res = {key : torch.stack(selected_data[key]) for key in res_keys}
@@ -1237,29 +1286,9 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
     def get_episode_data(self, episode_idx: int) -> dict:
         for dataset in self._datasets:
             if episode_idx < dataset.num_episodes:
-                file = str(dataset.root / dataset.meta.get_data_file_path(dataset.episodes[episode_idx]))
-                table = pq.read_table(str(file))
-
-                result_dict = {}
-                for col_name in table.column_names:
-                    col = table[col_name]
-                    try:
-                        np_arr = col.to_numpy(zero_copy_only=True)
-                    except Exception:
-                        raw = col.to_numpy()
-                        np_arr = np.stack(raw) if raw.dtype == object else raw
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings(
-                            "ignore",
-                            message="The given NumPy array is not writable",
-                            category=UserWarning,
-                        )
-                        # deal with string in parquet file
-                        if np_arr.dtype == 'O':                        
-                            result_dict[col_name] = np_arr
-                        else:
-                            result_dict[col_name] = torch.from_numpy(np_arr)
-                return result_dict
+                # 兼容点11：多数据集场景下也统一走 version-agnostic 路径，
+                # 通过索引切片而非文件名推断，避免 v3 shard 布局引发错误读取。
+                return dataset.get_episode_data(episode_idx)
             else:
                 episode_idx -= dataset.num_episodes
         raise IndexError(f"Episode index {episode_idx} out of bounds.")

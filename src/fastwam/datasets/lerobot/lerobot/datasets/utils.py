@@ -29,6 +29,7 @@ import array
 import datasets
 import jsonlines
 import numpy as np
+import pandas as pd
 import packaging.version
 import torch
 from datasets.table import embed_table_storage
@@ -55,6 +56,10 @@ EPISODES_PATH = "meta/episodes.jsonl"
 STATS_PATH = "meta/stats.json"
 EPISODES_STATS_PATH = "meta/episodes_stats.jsonl"
 TASKS_PATH = "meta/tasks.jsonl"
+# v3.0 的任务元数据可能从 jsonl 迁移到 parquet，因此补充 parquet 路径常量。
+TASKS_PARQUET_PATH = "meta/tasks.parquet"
+# v3.0 的 episode 元数据是分片 parquet（按 chunk/file 组织），这里用 glob 统一匹配。
+EPISODES_PARQUET_GLOB = "meta/episodes/chunk-*/file-*.parquet"
 
 ANNOTATION_PATHS = {
     "subtask": "annotations/subtask_annotations.jsonl",
@@ -226,8 +231,66 @@ def write_task(task_index: int, task: dict, local_dir: Path):
 
 
 def load_tasks(local_dir: Path) -> tuple[dict, dict]:
-    tasks = load_jsonlines(local_dir / TASKS_PATH)
-    tasks = {item["task_index"]: item["task"] for item in sorted(tasks, key=lambda x: x["task_index"])}
+    tasks_path_jsonl = local_dir / TASKS_PATH
+    tasks_path_parquet = local_dir / TASKS_PARQUET_PATH
+    # 兼容策略：优先走 v2.1 的 jsonl；不存在时再按 v3.0 的 parquet 读取。
+    if tasks_path_jsonl.exists():
+        tasks = load_jsonlines(tasks_path_jsonl)
+        tasks = {item["task_index"]: item["task"] for item in sorted(tasks, key=lambda x: x["task_index"])}
+    elif tasks_path_parquet.exists():
+        df = pd.read_parquet(tasks_path_parquet)
+        if "task_index" not in df.columns:
+            raise ValueError(f"{tasks_path_parquet} must contain 'task_index' column.")
+
+        # 说明：部分 v3.0 转换产物的 tasks.parquet 只保留 task_index，缺少 task 文本。
+        # 因此优先尝试常见文本列；若缺失则回退到 episode/data 元数据推断。
+        task_col = next((c for c in ["task", "tasks", "instruction", "prompt"] if c in df.columns), None)
+        task_indices = [int(v) for v in df["task_index"].tolist()]
+
+        tasks = {}
+        if task_col is not None:
+            # 分支A：parquet 中已经有任务文本，直接建立映射。
+            for row in df.sort_values("task_index").to_dict(orient="records"):
+                task_idx = int(row["task_index"])
+                task_val = row[task_col]
+                # 兼容字符串、列表、ndarray 三种存储形态，统一抽取成字符串。
+                if isinstance(task_val, (list, tuple, np.ndarray)):
+                    task_text = str(task_val[0]) if len(task_val) > 0 else f"task_{task_idx}"
+                else:
+                    task_text = str(task_val)
+                tasks[task_idx] = task_text
+        else:
+            # 分支B：缺少任务文本时，使用 v3 的 episode 元数据 + data 分片联合反推。
+            # 步骤1：从 episode 元数据中拿到 episode_index -> 任务文本（tasks 字段）。
+            episodes = load_episodes(local_dir)
+            ep_to_task_text = {}
+            for ep_idx, ep_meta in episodes.items():
+                ep_tasks = ep_meta.get("tasks", None)
+                if isinstance(ep_tasks, (list, tuple, np.ndarray)) and len(ep_tasks) > 0:
+                    ep_to_task_text[int(ep_idx)] = str(ep_tasks[0])
+                elif isinstance(ep_tasks, str):
+                    ep_to_task_text[int(ep_idx)] = ep_tasks
+
+            # 步骤2：从 data 分片中拿到 episode_index -> task_index。
+            ep_to_task_idx = {}
+            for data_file in sorted(local_dir.glob("data/chunk-*/file-*.parquet")):
+                shard_df = pd.read_parquet(data_file, columns=["episode_index", "task_index"])
+                first_task_idx = shard_df.groupby("episode_index", sort=False)["task_index"].first()
+                for ep_idx, task_idx in first_task_idx.items():
+                    ep_to_task_idx[int(ep_idx)] = int(task_idx)
+
+            # 步骤3：合并两张映射表，得到 task_index -> task_text。
+            for ep_idx, task_idx in ep_to_task_idx.items():
+                if task_idx not in tasks and ep_idx in ep_to_task_text:
+                    tasks[task_idx] = ep_to_task_text[ep_idx]
+
+            # 步骤4：若仍有缺失，给占位文案，避免训练初始化阶段直接崩溃。
+            for task_idx in sorted(set(task_indices)):
+                tasks.setdefault(task_idx, f"task_{task_idx}")
+    else:
+        raise FileNotFoundError(
+            f"Tasks metadata not found under {local_dir}. Expected one of: {TASKS_PATH}, {TASKS_PARQUET_PATH}"
+        )
     task_to_task_index = {task: task_index for task_index, task in tasks.items()}
     return tasks, task_to_task_index
 
@@ -244,8 +307,27 @@ def write_episode(episode: dict, local_dir: Path):
 
 
 def load_episodes(local_dir: Path) -> dict:
-    episodes = load_jsonlines(local_dir / EPISODES_PATH)
-    return {item["episode_index"]: item for item in sorted(episodes, key=lambda x: x["episode_index"])}
+    episodes_path_jsonl = local_dir / EPISODES_PATH
+    # 兼容策略：优先读取 v2.1 的 episodes.jsonl。
+    if episodes_path_jsonl.exists():
+        episodes = load_jsonlines(episodes_path_jsonl)
+        return {item["episode_index"]: item for item in sorted(episodes, key=lambda x: x["episode_index"])}
+
+    # v3.0：回退读取 chunked parquet 元数据（meta/episodes/chunk-*/file-*.parquet）。
+    episode_files = sorted(local_dir.glob(EPISODES_PARQUET_GLOB))
+    if len(episode_files) == 0:
+        raise FileNotFoundError(
+            f"Episodes metadata not found under {local_dir}. Expected {EPISODES_PATH} or {EPISODES_PARQUET_GLOB}"
+        )
+
+    episodes: dict[int, dict] = {}
+    for ep_file in episode_files:
+        df = pd.read_parquet(ep_file)
+        for row in df.to_dict(orient="records"):
+            # 统一组织成 {episode_index: episode_meta}，与 v2.1 读取结果保持同构。
+            ep_idx = int(row["episode_index"])
+            episodes[ep_idx] = row
+    return {ep_idx: episodes[ep_idx] for ep_idx in sorted(episodes.keys())}
 
 
 def write_episode_stats(episode_index: int, episode_stats: dict, local_dir: Path):
@@ -256,11 +338,82 @@ def write_episode_stats(episode_index: int, episode_stats: dict, local_dir: Path
 
 
 def load_episodes_stats(local_dir: Path) -> dict:
-    episodes_stats = load_jsonlines(local_dir / EPISODES_STATS_PATH)
-    return {
-        item["episode_index"]: cast_stats_to_numpy(item["stats"])
-        for item in sorted(episodes_stats, key=lambda x: x["episode_index"])
-    }
+    episodes_stats_path_jsonl = local_dir / EPISODES_STATS_PATH
+    # 兼容策略：优先读取 v2.1 的 episodes_stats.jsonl。
+    if episodes_stats_path_jsonl.exists():
+        episodes_stats = load_jsonlines(episodes_stats_path_jsonl)
+        return {
+            item["episode_index"]: cast_stats_to_numpy(item["stats"])
+            for item in sorted(episodes_stats, key=lambda x: x["episode_index"])
+        }
+
+    # v3.0：每个 episode 的统计量通常平铺在 meta/episodes parquet 的 "stats/..." 列。
+    episode_files = sorted(local_dir.glob(EPISODES_PARQUET_GLOB))
+    if len(episode_files) == 0:
+        return {}
+
+    episodes_stats: dict[int, dict[str, dict[str, np.ndarray]]] = {}
+    for ep_file in episode_files:
+        df = pd.read_parquet(ep_file)
+        stat_cols = [c for c in df.columns if c.startswith("stats/")]
+        if len(stat_cols) == 0:
+            continue
+        for row in df.to_dict(orient="records"):
+            ep_idx = int(row["episode_index"])
+            # 去掉 "stats/" 前缀后做反扁平化，恢复为嵌套 stats 结构。
+            flat_stats = {k[len("stats/"):]: row[k] for k in stat_cols}
+            episodes_stats[ep_idx] = cast_stats_to_numpy(unflatten_dict(flat_stats))
+
+    return {ep_idx: episodes_stats[ep_idx] for ep_idx in sorted(episodes_stats.keys())}
+
+
+def _to_numeric_ndarray(value: Any) -> np.ndarray:
+    # 目的：将 v3 parquet 反序列化后可能出现的嵌套 object ndarray
+    # （例如 ndarray 里再套 ndarray）递归压平成纯数值 ndarray，
+    # 以避免后续 aggregate_stats 中出现 numpy ufunc 类型报错。
+    if isinstance(value, np.ndarray):
+        if value.dtype != object:
+            return value
+        if value.size == 1:
+            return _to_numeric_ndarray(value.item())
+        elems = [_to_numeric_ndarray(v) for v in value.tolist()]
+        with contextlib.suppress(Exception):
+            return np.stack(elems)
+        return np.array(elems)
+
+    if isinstance(value, (list, tuple)):
+        elems = [_to_numeric_ndarray(v) for v in value]
+        with contextlib.suppress(Exception):
+            return np.stack(elems)
+        return np.array(elems)
+
+    return np.array(value)
+
+
+def normalize_stats_shapes(stats: dict[str, dict[str, np.ndarray]] | None, features: dict[str, dict]) -> dict[str, dict[str, np.ndarray]] | None:
+    # 目的：把不同来源（v2.1 / v3.0）统计量统一成训练代码期望的形状约定。
+    # - count 统一为 (1,)
+    # - 图像/视频的 min/max/mean/std 统一为 (3,1,1)
+    # 这样可直接复用现有归一化与聚合逻辑。
+    if stats is None:
+        return None
+
+    normalized: dict[str, dict[str, np.ndarray]] = {}
+    for feat_key, feat_stats in stats.items():
+        normalized[feat_key] = {}
+        feat_dtype = features.get(feat_key, {}).get("dtype")
+        for stat_key, stat_val in feat_stats.items():
+            arr = _to_numeric_ndarray(stat_val)
+            if stat_key == "count" and arr.shape == ():
+                arr = arr.reshape(1)
+            if feat_dtype in ["image", "video"] and stat_key != "count":
+                # v3 数据中视觉统计常见 (3,) / (3,1) / (1,3) 等形态，这里统一成 (3,1,1)。
+                if arr.shape == (3,):
+                    arr = arr.reshape(3, 1, 1)
+                elif arr.shape in {(3, 1), (1, 3)}:
+                    arr = arr.reshape(3, 1, 1)
+            normalized[feat_key][stat_key] = arr
+    return normalized
 
 
 def backward_compatible_episodes_stats(
