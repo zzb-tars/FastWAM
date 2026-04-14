@@ -1,0 +1,63 @@
+train:
+  _target_: fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
+  dataset_dirs:
+    - /mnt/data/datasets/lerobot/x1/insert_0402_e298
+  shape_meta:
+    images:
+      - key: chest
+        raw_shape: [3, 480, 640]
+        shape: [3, 224, 224]
+      - key: left_wrist
+        raw_shape: [3, 480, 640]
+        shape: [3, 224, 224]
+      - key: right_wrist
+        raw_shape: [3, 480, 640]
+        shape: [3, 224, 224]
+      - key: scene_fisheye
+        raw_shape: [3, 480, 640]
+        shape: [3, 224, 224]
+    action:
+      - key: default
+        raw_shape: 8
+        shape: 8
+    state:
+      - key: default
+        raw_shape: 8
+        shape: 8
+  num_frames: 33
+  global_sample_stride: 1
+  action_video_freq_ratio: 4
+  video_size: [224, 896]
+  camera_key: null
+  val_set_proportion: 0.0
+  is_training_set: true
+  skip_padding_as_possible: false
+  concat_multi_camera: "horizontal"
+  processor:
+    _target_: fastwam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
+    shape_meta: ${data.train.shape_meta}
+    num_obs_steps: ${data.train.num_frames}
+    num_output_cameras: 4
+    action_output_dim: 8
+    proprio_output_dim: 8
+    delta_action_dim_mask:
+      default: [true, true, true, true, true, true, false, false]
+
+    action_state_transforms: null
+    use_stepwise_action_norm: False
+    norm_default_mode: min/max
+    norm_exception_mode: null
+
+    action_state_merger:
+      _target_: fastwam.datasets.lerobot.transforms.action_state_merger.ConcatLeftAlign
+
+    train_transforms:
+      - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [224, 224]
+    val_transforms:
+      - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [224, 224]
+  text_embedding_cache_dir: ./data/text_embeds_cache/x1_insert_0402_e298
+  context_len: 128
