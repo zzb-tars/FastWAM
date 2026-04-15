@@ -14,7 +14,9 @@ if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   echo "[gpu_bind] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 fi
 
-EXTRA_ARGS=("$@")
+RAW_ARGS=("$@")
+EXTRA_ARGS=()
+CONFIG_NAME_ARGS=()
 NUM_MACHINES="${NNODES:-1}"
 MACHINE_RANK="${NODE_RANK:-0}"
 MAIN_PROCESS_IP="${MASTER_ADDR:-127.0.0.1}"
@@ -41,27 +43,41 @@ extract_task_basename() {
 }
 
 TASK_BASENAME="train"
-for ((i = 0; i < ${#EXTRA_ARGS[@]}; i++)); do
-  arg="${EXTRA_ARGS[$i]}"
+for ((i = 0; i < ${#RAW_ARGS[@]}; i++)); do
+  arg="${RAW_ARGS[$i]}"
   case "${arg}" in
+    config_name=*)
+      # Normalize shorthand and append config option at the end of argv.
+      # In this project, Hydra may reject overrides (e.g. task=...) when they
+      # appear after --config-name, so we keep --config-name last.
+      cfg="${arg#config_name=}"
+      CONFIG_NAME_ARGS+=("--config-name" "${cfg}")
+      ;;
     --config-name)
-      if ((i + 1 < ${#EXTRA_ARGS[@]})); then
-        next="${EXTRA_ARGS[$((i + 1))]}"
+      if ((i + 1 < ${#RAW_ARGS[@]})); then
+        next="${RAW_ARGS[$((i + 1))]}"
+        CONFIG_NAME_ARGS+=("${arg}" "${next}")
         if parsed="$(extract_task_basename "${next}")"; then
           TASK_BASENAME="${parsed}"
         fi
+        i=$((i + 1))
       fi
       ;;
     --config-name=*)
+      CONFIG_NAME_ARGS+=("${arg}")
       cfg="${arg#--config-name=}"
       if parsed="$(extract_task_basename "${cfg}")"; then
         TASK_BASENAME="${parsed}"
       fi
       ;;
     task=*)
+      EXTRA_ARGS+=("${arg}")
       cfg="${arg#task=}"
       cfg="${cfg%.yaml}"
       TASK_BASENAME="${cfg}"
+      ;;
+    *)
+      EXTRA_ARGS+=("${arg}")
       ;;
   esac
 done
@@ -123,4 +139,5 @@ accelerate launch \
   scripts/train.py \
   "output_dir=./runs/${TASK_BASENAME}/${RUN_ID}" \
   "wandb.name=${TASK_BASENAME}" \
-  "${EXTRA_ARGS[@]}"
+  "${EXTRA_ARGS[@]}" \
+  "${CONFIG_NAME_ARGS[@]}"

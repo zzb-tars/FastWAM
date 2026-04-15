@@ -63,3 +63,14 @@ python experiments/libero/eval_libero_single.py \
   EVALUATION.output_dir=./evaluate_results/debug_custom_task
 
 python scripts/precompute_text_embeds.py task=x1_insert_uncond_2cam224_1e-4
+
+
+WANDB_API_KEY="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" \
+bash scripts/train_zero1.sh 8 \
+  config_name=train_libero_v30_uncond_2cam224_1e-4 \
+  task=libero_v30_uncond_2cam224_1e-4
+
+WANDB_API_KEY="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" \
+bash scripts/train_zero1.sh 8 \
+  config_name=train_x1_insert_uncond_2cam224_1e-4 \
+  task=x1_insert_uncond_2cam224_1e-4
