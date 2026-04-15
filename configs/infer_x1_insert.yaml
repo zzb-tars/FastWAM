@@ -1,0 +1,70 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - data: null
+  - model: null
+  - task: x1_insert_uncond_2cam224_1e-4
+
+# ---- Inference-specific settings ----
+inference:
+  # Path to trained checkpoint (.pt file containing mot state_dict)
+  checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_02-29-12/checkpoints/weights/step_006000.pt
+
+  # Path to dataset_stats.json (must match training normalization)
+  dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_02-29-12/dataset_stats.json
+
+  # Output directory for inference results
+  output_dir: ./experiments/infer/outputs/${now:%Y-%m-%d_%H-%M-%S}
+
+  # Number of dataset samples to run inference on
+  num_samples: 5
+
+  # Device for inference
+  device: cuda
+
+  # Number of denoising steps for action inference
+  num_inference_steps: 20
+
+  # Override action horizon for infer_action (null = use sample GT action length)
+  # IMPORTANT: It's recommended to set this equal to (video_prediction.num_video_frames - 1)
+  # to ensure action and video lengths align properly in infer_joint.
+  # Example: if num_video_frames=65, set action_horizon_override=64
+  action_horizon_override: 32
+
+  # Random seed
+  seed: 42
+
+  # Whether to save predicted action to file
+  save_actions: true
+
+  # Whether to save the input video (GT) side-by-side for reference
+  save_gt_video: true
+
+  # Specific sample indices to infer on (null = random selection)
+  sample_indices: null
+
+  # Optional video rollout options (saved as vertical stitch: GT on top, pred on bottom)
+  video_prediction:
+    enabled: true
+    with_gt_action: true
+    with_pred_action: true
+    without_action: true
+    # Must satisfy T % 4 == 1. If set, OVERRIDES sample video length. fps=8 => 65 frames ≈ 8.1 seconds.
+    # Set to null to use each sample's original video length.
+    # IMPORTANT: To ensure proper alignment, set (action_horizon_override = num_video_frames - 1)
+    # at the inference level above. This ensures action and video lengths match during infer_joint.
+    num_video_frames: 33
+    fps: 2
+
+# ---- Keep training configs for model/data consistency ----
+mixed_precision: "bf16"
+seed: 42
+
+# suppress hydra output dir
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null

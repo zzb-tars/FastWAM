@@ -74,3 +74,5 @@ WANDB_API_KEY="wandb_v1_3KggGSmouXPxK6gGK19ebtIjjqa_vqWfmBPIMNSmDWTuR0VOCrpEKRHs
 bash scripts/train_zero1.sh 8 \
   config_name=train_x1_insert_uncond_2cam224_1e-4 \
   task=x1_insert_uncond_2cam224_1e-4
+
+bash experiments/infer/run_infer.sh 
