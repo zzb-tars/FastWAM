@@ -11,19 +11,26 @@ Usage:
         inference.checkpoint_path=/path/to/other/checkpoint.pt \
         inference.num_samples=20
 """
+import csv
 import json
 import logging
 import os
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
 import hydra
+import matplotlib
 import numpy as np
 import torch
+import time
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image, ImageDraw
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
@@ -193,7 +200,193 @@ def _compute_action_error_metrics(pred_action_raw: np.ndarray, gt_action_raw: np
         "num_steps": int(abs_err.shape[0]),
         "mae_per_dim": [float(v) for v in mae_per_dim.tolist()],
         "rmse_per_dim": [float(v) for v in rmse_per_dim.tolist()],
-        "unit": "raw (denormalized) action space: dims 0-6 in radians (delta), dim 7 gripper [0, 100]",
+        "unit": "raw (denormalized) action space: dims 0-6 in radians (delta), dim 7 gripper scaled to [0, 1] for this script",
+    }
+
+
+def _build_action_error_records(
+    pred_action_raw: np.ndarray,
+    gt_action_raw: np.ndarray,
+    sample_idx: int,
+) -> list[dict]:
+    """Build per-sample, per-time-step, per-dimension absolute error records."""
+    if pred_action_raw.shape != gt_action_raw.shape:
+        raise ValueError(
+            "Action shape mismatch for record building: "
+            f"pred={pred_action_raw.shape} vs gt={gt_action_raw.shape}"
+        )
+
+    diff = pred_action_raw - gt_action_raw
+    abs_err = np.abs(diff)
+    sq_err = diff ** 2
+    num_steps, num_dims = abs_err.shape
+    records: list[dict] = []
+    for time_step in range(num_steps):
+        for dim in range(num_dims):
+            records.append(
+                {
+                    "sample_idx": int(sample_idx),
+                    "time_step": int(time_step),
+                    "dim": int(dim),
+                    "pred_action": float(pred_action_raw[time_step, dim]),
+                    "gt_action": float(gt_action_raw[time_step, dim]),
+                    "signed_error": float(diff[time_step, dim]),
+                    "abs_error": float(abs_err[time_step, dim]),
+                    "sq_error": float(sq_err[time_step, dim]),
+                }
+            )
+    return records
+
+
+def _aggregate_action_error_records(records: list[dict]) -> list[dict]:
+    """Aggregate error records by time step and action dimension."""
+    grouped_errors: dict[tuple[int, int], list[float]] = defaultdict(list)
+    for record in records:
+        grouped_errors[(int(record["time_step"]), int(record["dim"]))].append(float(record["abs_error"]))
+
+    summary_rows: list[dict] = []
+    for (time_step, dim), values in sorted(grouped_errors.items()):
+        values_np = np.asarray(values, dtype=np.float64)
+        summary_rows.append(
+            {
+                "time_step": int(time_step),
+                "dim": int(dim),
+                "count": int(values_np.size),
+                "mean_abs_error": float(values_np.mean()),
+                "max_abs_error": float(values_np.max()),
+                "p50_abs_error": float(np.percentile(values_np, 50)),
+                "p75_abs_error": float(np.percentile(values_np, 75)),
+                "p90_abs_error": float(np.percentile(values_np, 90)),
+                "p95_abs_error": float(np.percentile(values_np, 95)),
+                "p99_abs_error": float(np.percentile(values_np, 99)),
+            }
+        )
+    return summary_rows
+
+
+def _write_csv_rows(path: str, rows: list[dict], fieldnames: list[str]) -> None:
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _save_action_error_summary_outputs(records: list[dict], output_dir: str) -> dict:
+    """Save detailed records, aggregated CSV, and matplotlib SVG plots."""
+    records_path = os.path.join(output_dir, "action_error_records.csv")
+    summary_path = os.path.join(output_dir, "action_error_summary.csv")
+    plot_dir = os.path.join(output_dir, "action_error_plots")
+    os.makedirs(plot_dir, exist_ok=True)
+
+    record_fieldnames = [
+        "sample_idx",
+        "time_step",
+        "dim",
+        "pred_action",
+        "gt_action",
+        "signed_error",
+        "abs_error",
+        "sq_error",
+    ]
+    _write_csv_rows(records_path, records, record_fieldnames)
+
+    summary_rows = _aggregate_action_error_records(records)
+    summary_fieldnames = [
+        "time_step",
+        "dim",
+        "count",
+        "mean_abs_error",
+        "max_abs_error",
+        "p50_abs_error",
+        "p75_abs_error",
+        "p90_abs_error",
+        "p95_abs_error",
+        "p99_abs_error",
+    ]
+    _write_csv_rows(summary_path, summary_rows, summary_fieldnames)
+
+    if len(summary_rows) == 0:
+        raise ValueError("No action error records available for summary plotting.")
+
+    time_steps = sorted({int(row["time_step"]) for row in summary_rows})
+    dims = sorted({int(row["dim"]) for row in summary_rows})
+    stat_keys = [
+        ("mean_abs_error", "Mean absolute error"),
+        ("max_abs_error", "Max absolute error"),
+        ("p50_abs_error", "P50 absolute error"),
+        ("p75_abs_error", "P75 absolute error"),
+        ("p90_abs_error", "P90 absolute error"),
+        ("p95_abs_error", "P95 absolute error"),
+        ("p99_abs_error", "P99 absolute error"),
+    ]
+    stat_label_prefix = {
+        "mean_abs_error": "mean",
+        "max_abs_error": "max",
+        "p50_abs_error": "p50",
+        "p75_abs_error": "p75",
+        "p90_abs_error": "p90",
+        "p95_abs_error": "p95",
+        "p99_abs_error": "p99",
+    }
+
+    summary_lookup = {
+        (int(row["time_step"]), int(row["dim"])): row for row in summary_rows
+    }
+    cmap = plt.get_cmap("tab10")
+    colors = [cmap(i % 10) for i in range(len(dims))]
+    plot_paths: dict[str, str] = {}
+
+    for stat_key, stat_label in stat_keys:
+        matrix = np.full((len(time_steps), len(dims)), np.nan, dtype=np.float32)
+        for t_idx, time_step in enumerate(time_steps):
+            for d_idx, dim in enumerate(dims):
+                row = summary_lookup.get((time_step, dim))
+                if row is not None:
+                    matrix[t_idx, d_idx] = float(row[stat_key])
+
+        # Dynamically size width by number of time steps so long horizons (e.g. 65) fit well.
+        # Chooses at least 12 inches, otherwise 0.25 inch per time step plus padding.
+        fig_width = max(12.0, 0.25 * len(time_steps) + 4.0)
+        fig_height = 6.5
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        x = np.arange(len(time_steps), dtype=np.float32)
+        group_width = 0.82
+        bar_width = group_width / max(len(dims), 1)
+        offsets = (np.arange(len(dims), dtype=np.float32) - (len(dims) - 1) / 2.0) * bar_width
+
+        for dim_idx, dim in enumerate(dims):
+            ax.bar(
+                x + offsets[dim_idx],
+                matrix[:, dim_idx],
+                width=bar_width,
+                color=colors[dim_idx],
+                label=f"dim {dim}",
+                linewidth=0,
+            )
+
+        ax.set_title(f"Action absolute error by time step ({stat_label})")
+        ax.set_xlabel("Time step")
+        ax.set_ylabel("Absolute error")
+        # Fix y-axis maximum as requested by the user
+        ax.set_ylim(0.0, 0.05)
+        ax.set_xticks(x)
+        ax.set_xticklabels([str(t) for t in time_steps], rotation=0)
+        ax.grid(axis="y", alpha=0.3)
+        ax.legend(ncols=2, fontsize=9, loc="upper left", bbox_to_anchor=(1.01, 1.0))
+        fig.tight_layout(rect=[0.0, 0.0, 0.82, 1.0])
+
+        plot_name = f"action_error_time_step_{stat_label_prefix[stat_key]}.svg"
+        plot_path = os.path.join(plot_dir, plot_name)
+        fig.savefig(plot_path, format="svg", bbox_inches="tight")
+        plt.close(fig)
+        plot_paths[stat_key] = plot_path
+
+    return {
+        "records_csv_path": records_path,
+        "summary_csv_path": summary_path,
+        "plot_dir": plot_dir,
+        "plot_paths": plot_paths,
     }
 
 
@@ -267,7 +460,7 @@ def _save_action_error_visualizations(
     w, h = 960, 60 + 36 * d_dim
     chart = Image.new("RGB", (w, h), color=(255, 255, 255))
     draw = ImageDraw.Draw(chart)
-    draw.text((20, 10), "Per-dimension MAE (raw action space: dims 0-6 in rad, dim 7 gripper [0,100])", fill=(0, 0, 0))
+    draw.text((20, 10), "Per-dimension MAE (dims 0-6 in rad, dim 7 gripper scaled to [0,1])", fill=(0, 0, 0))
     bar_left = 220
     bar_right = w - 40
     bar_max_width = bar_right - bar_left
@@ -334,12 +527,15 @@ def run_single_sample(
     cfg: DictConfig,
     sample_idx: int,
     output_dir: str,
+    error_records: list[dict],
+    inference_times: list[float],
 ) -> dict:
     """Run inference on a single dataset sample and save results."""
     infer_cfg = cfg.inference
     device = str(infer_cfg.device)
     num_inference_steps = int(infer_cfg.num_inference_steps)
     seed = int(infer_cfg.seed)
+    skip_video_generation = bool(infer_cfg.get("skip_video_generation", False))
     
     # Create per-sample output subfolder
     sample_output_dir = os.path.join(output_dir, f"sample_{sample_idx:06d}")
@@ -387,8 +583,13 @@ def run_single_sample(
     else:
         infer_kwargs["prompt"] = prompt
 
-    # Run action-only inference
+    # Run action-only inference and measure time
+    t0 = time.perf_counter()
     pred = model.infer_action(**infer_kwargs)
+    t1 = time.perf_counter()
+    infer_time = float(t1 - t0)
+    inference_times.append(infer_time)
+    logger.info("Sample %d action inference time: %.4f s", sample_idx, infer_time)
     pred_action = pred["action"]  # [T_action, action_dim]
 
     # Denormalize predicted action
@@ -399,7 +600,7 @@ def run_single_sample(
     pred_action_raw = _denormalize_action(pred_action, pred_proprio, processor)  # [1, T_action, action_dim]
     gt_action_raw = _denormalize_action(action_gt, gt_proprio, processor)  # [1, T_action, action_dim]
 
-    ### HACK: For x1 robot, scale gripper dimension (dim 7) back to [0, 100] range
+    # x1 gripper is stored on a 0-100 scale; normalize it to [0, 1] so it does not dominate the action error plots.
     pred_action_raw[..., -1] = pred_action_raw[..., -1] / 100.0
     gt_action_raw[..., -1] = gt_action_raw[..., -1] / 100.0
 
@@ -415,6 +616,7 @@ def run_single_sample(
     action_error_metrics["pred_steps"] = int(pred_raw_2d.shape[0])
     action_error_metrics["gt_steps"] = int(gt_raw_2d.shape[0])
     action_error_metrics["overlap_steps"] = int(overlap_steps)
+    error_records.extend(_build_action_error_records(pred_eval, gt_eval, sample_idx=sample_idx))
     action_viz_paths = _save_action_error_visualizations(
         pred_eval,
         gt_eval,
@@ -426,6 +628,7 @@ def run_single_sample(
         "sample_idx": sample_idx,
         "action_horizon": action_horizon,
         "prompt": prompt,
+        "action_inference_time_s": infer_time,
         "action_error": action_error_metrics,
         "config_diagnostics": config_diagnostics,
         **action_viz_paths,
@@ -457,7 +660,7 @@ def run_single_sample(
         result["config_diagnostics_path"] = diagnostics_path
 
     # Save GT video for reference
-    if infer_cfg.save_gt_video:
+    if infer_cfg.save_gt_video and not skip_video_generation:
         gt_frames = _video_tensor_to_pil_frames(video)
         gt_video_path = os.path.join(sample_output_dir, "gt_video.mp4")
         save_mp4(gt_frames, gt_video_path, fps=8)
@@ -466,7 +669,7 @@ def run_single_sample(
 
     # Optional video prediction: based on GT action / predicted action / no action
     video_cfg = infer_cfg.get("video_prediction", {})
-    if bool(video_cfg.get("enabled", True)):
+    if (not skip_video_generation) and bool(video_cfg.get("enabled", True)):
         fps = int(video_cfg.get("fps", 8))
         # Prioritize explicit num_video_frames config over sample GT length
         num_video_frames_cfg = video_cfg.get("num_video_frames", None)
@@ -561,12 +764,20 @@ def main(cfg: DictConfig):
     model = _load_model(cfg, device=device)
     logger.info("Model loaded on %s", device)
 
+    # Compile model
+    logger.info("Compiling model...")
+    model = torch.compile(model, mode="reduce-overhead")
+    logger.info("Model compiled.")
+
     # Load dataset
     logger.info("Loading dataset...")
     dataset = _load_dataset(cfg)
     processor = dataset.lerobot_dataset.processor
     logger.info("Dataset loaded: %d samples", len(dataset))
 
+    error_records: list[dict] = []
+    inference_times: list[float] = []
+    
     # Select sample indices
     num_samples = int(infer_cfg.num_samples)
     if infer_cfg.sample_indices is not None:
@@ -588,8 +799,31 @@ def main(cfg: DictConfig):
             cfg=cfg,
             sample_idx=idx,
             output_dir=output_dir,
+            error_records=error_records,
+            inference_times=inference_times,
         )
         all_results.append(result)
+
+    error_summary_paths = _save_action_error_summary_outputs(error_records, output_dir)
+    logger.info("Saved detailed action error records -> %s", error_summary_paths["records_csv_path"])
+    logger.info("Saved aggregated action error summary -> %s", error_summary_paths["summary_csv_path"])
+    logger.info("Saved action error plots -> %s", error_summary_paths["plot_dir"])
+
+    for result in all_results:
+        result["action_error_records_csv_path"] = error_summary_paths["records_csv_path"]
+        result["action_error_summary_csv_path"] = error_summary_paths["summary_csv_path"]
+        result["action_error_plot_dir"] = error_summary_paths["plot_dir"]
+        result["action_error_plot_paths"] = error_summary_paths["plot_paths"]
+
+    if len(inference_times) > 0:
+        avg_time = float(sum(inference_times) / len(inference_times))
+        logger.info(
+            "Average action inference time over %d samples: %.4f s",
+            len(inference_times),
+            avg_time,
+        )
+    else:
+        logger.info("No action inference timings were recorded.")
 
     # Save summary
     summary_path = os.path.join(output_dir, "inference_summary.json")
