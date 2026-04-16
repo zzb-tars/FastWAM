@@ -222,20 +222,45 @@ def _save_action_error_visualizations(
     abs_err = np.abs(diff)
     t_steps, d_dim = abs_err.shape
 
-    # Heatmap: time x dimension absolute error
+    # Heatmap: x-axis is time, y-axis is action dimension
     max_val = float(abs_err.max())
     denom = max(max_val, 1e-8)
     norm = (abs_err / denom).clip(0.0, 1.0)
     r = (norm * 255.0).astype(np.uint8)
     g = ((1.0 - norm) * 255.0).astype(np.uint8)
     b = np.zeros_like(r, dtype=np.uint8)
-    heatmap_rgb = np.stack([r, g, b], axis=-1)  # [T, D, 3]
+    heatmap_rgb = np.stack([r, g, b], axis=-1).transpose(1, 0, 2)  # [D, T, 3]
+    cell_w, cell_h = 12, 24  # pixels per time step / per dim
+    heat_w, heat_h = t_steps * cell_w, d_dim * cell_h
     heatmap_img = Image.fromarray(heatmap_rgb, mode="RGB").resize(
-        (d_dim * 24, t_steps * 12),
+        (heat_w, heat_h),
         resample=Image.NEAREST,
     )
+    # Add margins for labels: left=60 (dim names), bottom=20 (time ticks), top=20 (title row)
+    margin_left, margin_bottom, margin_top = 60, 20, 22
+    canvas_w = margin_left + heat_w
+    canvas_h = margin_top + heat_h + margin_bottom
+    canvas = Image.new("RGB", (canvas_w, canvas_h), color=(255, 255, 255))
+    canvas.paste(heatmap_img, (margin_left, margin_top))
+    draw = ImageDraw.Draw(canvas)
+    # Title
+    draw.text((margin_left, 4), f"Action Error Heatmap  (red=high, green=low, max={max_val:.4f})", fill=(40, 40, 40))
+    # Y-axis: dim labels on the left of each row
+    for d in range(d_dim):
+        y_center = margin_top + d * cell_h + cell_h // 2 - 4
+        draw.text((2, y_center), f"dim{d}", fill=(20, 20, 20))
+    # X-axis: time tick every 4 steps
+    tick_every = max(1, t_steps // 8)
+    for t in range(0, t_steps, tick_every):
+        x = margin_left + t * cell_w
+        draw.line([(x, margin_top + heat_h), (x, margin_top + heat_h + 4)], fill=(80, 80, 80))
+        draw.text((x, margin_top + heat_h + 5), str(t), fill=(40, 40, 40))
+    # Last tick
+    x_last = margin_left + (t_steps - 1) * cell_w
+    draw.line([(x_last, margin_top + heat_h), (x_last, margin_top + heat_h + 4)], fill=(80, 80, 80))
+    draw.text((x_last, margin_top + heat_h + 5), str(t_steps - 1), fill=(40, 40, 40))
     heatmap_path = os.path.join(output_dir, "action_error_heatmap.png")
-    heatmap_img.save(heatmap_path)
+    canvas.save(heatmap_path)
 
     # Per-dimension MAE bar chart
     mae_per_dim = abs_err.mean(axis=0)
@@ -374,6 +399,10 @@ def run_single_sample(
     pred_action_raw = _denormalize_action(pred_action, pred_proprio, processor)  # [1, T_action, action_dim]
     gt_action_raw = _denormalize_action(action_gt, gt_proprio, processor)  # [1, T_action, action_dim]
 
+    ### HACK: For x1 robot, scale gripper dimension (dim 7) back to [0, 100] range
+    pred_action_raw[..., -1] = pred_action_raw[..., -1] / 100.0
+    gt_action_raw[..., -1] = gt_action_raw[..., -1] / 100.0
+
     # Action error metrics + visualizations
     pred_raw_2d = pred_action_raw.squeeze(0)
     gt_raw_2d = gt_action_raw.squeeze(0)
@@ -447,17 +476,17 @@ def run_single_sample(
             num_video_frames = int(video.shape[1])
 
         # Check if num_video_frames exceeds GT video length
-        if num_video_frames > int(video.shape[1]):
+        if num_video_frames > (int(video.shape[1] - 1) * 4 + 1):
             logger.warning(
                 "  [WARN] num_video_frames (%d) > GT length (%d). "
                 "The generated video will extrapolate beyond the training distribution.",
                 num_video_frames,
-                int(video.shape[1]) * fps + 1,
+                (int(video.shape[1] - 1) * 4 + 1),
             )
             config_diagnostics["video_extrapolation"] = {
                 "num_video_frames": num_video_frames,
                 "gt_video_frames": int(video.shape[1]),
-                "extrapolation_frames": num_video_frames - int(video.shape[1]),
+                "extrapolation_frames": num_video_frames - (int(video.shape[1] - 1) * 4 + 1),
             }
 
         gt_frames = _video_tensor_to_pil_frames(video)

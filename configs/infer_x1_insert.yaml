@@ -9,10 +9,10 @@ defaults:
 # ---- Inference-specific settings ----
 inference:
   # Path to trained checkpoint (.pt file containing mot state_dict)
-  checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_02-29-12/checkpoints/weights/step_006000.pt
+  checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/checkpoints/weights/step_006000.pt
 
   # Path to dataset_stats.json (must match training normalization)
-  dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_02-29-12/dataset_stats.json
+  dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/dataset_stats.json
 
   # Output directory for inference results
   output_dir: ./experiments/infer/outputs/${now:%Y-%m-%d_%H-%M-%S}
@@ -30,7 +30,7 @@ inference:
   # IMPORTANT: It's recommended to set this equal to (video_prediction.num_video_frames - 1)
   # to ensure action and video lengths align properly in infer_joint.
   # Example: if num_video_frames=65, set action_horizon_override=64
-  action_horizon_override: 32
+  action_horizon_override: null
 
   # Random seed
   seed: 42
@@ -54,8 +54,8 @@ inference:
     # Set to null to use each sample's original video length.
     # IMPORTANT: To ensure proper alignment, set (action_horizon_override = num_video_frames - 1)
     # at the inference level above. This ensures action and video lengths match during infer_joint.
-    num_video_frames: 33
-    fps: 2
+    num_video_frames: null
+    fps: 8
 
 # ---- Keep training configs for model/data consistency ----
 mixed_precision: "bf16"
