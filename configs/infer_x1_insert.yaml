@@ -24,7 +24,7 @@ inference:
   device: cuda
 
   # Number of denoising steps for action inference
-  num_inference_steps: 20
+  num_inference_steps: 5
 
   # Override action horizon for infer_action (null = use sample GT action length)
   # IMPORTANT: It's recommended to set this equal to (video_prediction.num_video_frames - 1)
@@ -40,6 +40,9 @@ inference:
 
   # Whether to save the input video (GT) side-by-side for reference
   save_gt_video: true
+
+  # When true, skip all video generation/saving steps and only run action inference + error aggregation.
+  skip_video_generation: true
 
   # Specific sample indices to infer on (null = random selection)
   sample_indices: null
