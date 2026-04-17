@@ -264,6 +264,107 @@ def _aggregate_action_error_records(records: list[dict]) -> list[dict]:
     return summary_rows
 
 
+def _aggregate_sample_error_records(records: list[dict]) -> list[dict]:
+    """Aggregate error records by sample, with early/late-window diagnostics."""
+    grouped: dict[int, list[dict]] = defaultdict(list)
+    for record in records:
+        grouped[int(record["sample_idx"])].append(record)
+
+    summary_rows: list[dict] = []
+    for sample_idx, sample_records in sorted(grouped.items()):
+        abs_all = np.asarray([float(r["abs_error"]) for r in sample_records], dtype=np.float64)
+        early_vals = np.asarray(
+            [float(r["abs_error"]) for r in sample_records if int(r["time_step"]) <= 7],
+            dtype=np.float64,
+        )
+        late_vals = np.asarray(
+            [float(r["abs_error"]) for r in sample_records if int(r["time_step"]) >= 24],
+            dtype=np.float64,
+        )
+        summary_rows.append(
+            {
+                "sample_idx": int(sample_idx),
+                "count": int(abs_all.size),
+                "mean_abs_error": float(abs_all.mean()),
+                "p75_abs_error": float(np.percentile(abs_all, 75)),
+                "p90_abs_error": float(np.percentile(abs_all, 90)),
+                "p95_abs_error": float(np.percentile(abs_all, 95)),
+                "p99_abs_error": float(np.percentile(abs_all, 99)),
+                "max_abs_error": float(abs_all.max()),
+                "early_mean_abs_error_t_le_7": float(early_vals.mean()) if early_vals.size > 0 else np.nan,
+                "late_mean_abs_error_t_ge_24": float(late_vals.mean()) if late_vals.size > 0 else np.nan,
+                "late_p90_abs_error_t_ge_24": float(np.percentile(late_vals, 90)) if late_vals.size > 0 else np.nan,
+                "late_p95_abs_error_t_ge_24": float(np.percentile(late_vals, 95)) if late_vals.size > 0 else np.nan,
+            }
+        )
+    return summary_rows
+
+
+def _save_sample_error_rankings(records: list[dict], all_results: list[dict], output_dir: str) -> dict:
+    """Save per-sample error ranking tables for outlier analysis."""
+    rankings_dir = os.path.join(output_dir, "action_error_sample_rankings")
+    os.makedirs(rankings_dir, exist_ok=True)
+
+    sample_rows = _aggregate_sample_error_records(records)
+    metrics_by_sample = {
+        int(r.get("sample_idx", -1)): r.get("action_error", {}) for r in all_results
+    }
+
+    enriched_rows: list[dict] = []
+    for row in sample_rows:
+        sample_idx = int(row["sample_idx"])
+        action_error = metrics_by_sample.get(sample_idx, {})
+        row_out = dict(row)
+        row_out["summary_mae_global"] = float(action_error.get("mae_global", np.nan))
+        row_out["summary_rmse_global"] = float(action_error.get("rmse_global", np.nan))
+        row_out["summary_max_abs_error"] = float(action_error.get("max_abs_error", np.nan))
+        enriched_rows.append(row_out)
+
+    base_fields = [
+        "sample_idx",
+        "count",
+        "mean_abs_error",
+        "p75_abs_error",
+        "p90_abs_error",
+        "p95_abs_error",
+        "p99_abs_error",
+        "max_abs_error",
+        "early_mean_abs_error_t_le_7",
+        "late_mean_abs_error_t_ge_24",
+        "late_p90_abs_error_t_ge_24",
+        "late_p95_abs_error_t_ge_24",
+        "summary_mae_global",
+        "summary_rmse_global",
+        "summary_max_abs_error",
+    ]
+
+    all_samples_path = os.path.join(rankings_dir, "sample_error_rankings_all.csv")
+    _write_csv_rows(all_samples_path, enriched_rows, base_fields)
+
+    sorted_specs = [
+        ("p95_abs_error", "sample_error_rankings_by_p95_desc.csv"),
+        ("p90_abs_error", "sample_error_rankings_by_p90_desc.csv"),
+        ("max_abs_error", "sample_error_rankings_by_max_desc.csv"),
+        ("late_p95_abs_error_t_ge_24", "sample_error_rankings_by_late_p95_desc.csv"),
+    ]
+    sorted_paths: dict[str, str] = {}
+    for key, filename in sorted_specs:
+        sorted_rows = sorted(
+            enriched_rows,
+            key=lambda r: float(r.get(key, np.nan)),
+            reverse=True,
+        )
+        path = os.path.join(rankings_dir, filename)
+        _write_csv_rows(path, sorted_rows, base_fields)
+        sorted_paths[key] = path
+
+    return {
+        "rankings_dir": rankings_dir,
+        "all_samples_path": all_samples_path,
+        "sorted_paths": sorted_paths,
+    }
+
+
 def _write_csv_rows(path: str, rows: list[dict], fieldnames: list[str]) -> None:
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -809,11 +910,17 @@ def main(cfg: DictConfig):
     logger.info("Saved aggregated action error summary -> %s", error_summary_paths["summary_csv_path"])
     logger.info("Saved action error plots -> %s", error_summary_paths["plot_dir"])
 
+    sample_ranking_paths = _save_sample_error_rankings(error_records, all_results, output_dir)
+    logger.info("Saved per-sample error rankings -> %s", sample_ranking_paths["rankings_dir"])
+
     for result in all_results:
         result["action_error_records_csv_path"] = error_summary_paths["records_csv_path"]
         result["action_error_summary_csv_path"] = error_summary_paths["summary_csv_path"]
         result["action_error_plot_dir"] = error_summary_paths["plot_dir"]
         result["action_error_plot_paths"] = error_summary_paths["plot_paths"]
+        result["action_error_sample_rankings_dir"] = sample_ranking_paths["rankings_dir"]
+        result["action_error_sample_rankings_all_csv_path"] = sample_ranking_paths["all_samples_path"]
+        result["action_error_sample_rankings_sorted_csv_paths"] = sample_ranking_paths["sorted_paths"]
 
     if len(inference_times) > 0:
         avg_time = float(sum(inference_times) / len(inference_times))
