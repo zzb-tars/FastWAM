@@ -208,6 +208,7 @@ def _build_action_error_records(
     pred_action_raw: np.ndarray,
     gt_action_raw: np.ndarray,
     sample_idx: int,
+    time_steps: Optional[np.ndarray] = None,
 ) -> list[dict]:
     """Build per-sample, per-time-step, per-dimension absolute error records."""
     if pred_action_raw.shape != gt_action_raw.shape:
@@ -220,19 +221,28 @@ def _build_action_error_records(
     abs_err = np.abs(diff)
     sq_err = diff ** 2
     num_steps, num_dims = abs_err.shape
+    if time_steps is None:
+        time_steps = np.arange(num_steps, dtype=np.int64)
+    else:
+        time_steps = np.asarray(time_steps, dtype=np.int64)
+        if int(time_steps.shape[0]) != num_steps:
+            raise ValueError(
+                f"time_steps length mismatch: expected {num_steps}, got {int(time_steps.shape[0])}"
+            )
     records: list[dict] = []
-    for time_step in range(num_steps):
+    for row_idx in range(num_steps):
+        time_step = int(time_steps[row_idx])
         for dim in range(num_dims):
             records.append(
                 {
                     "sample_idx": int(sample_idx),
                     "time_step": int(time_step),
                     "dim": int(dim),
-                    "pred_action": float(pred_action_raw[time_step, dim]),
-                    "gt_action": float(gt_action_raw[time_step, dim]),
-                    "signed_error": float(diff[time_step, dim]),
-                    "abs_error": float(abs_err[time_step, dim]),
-                    "sq_error": float(sq_err[time_step, dim]),
+                    "pred_action": float(pred_action_raw[row_idx, dim]),
+                    "gt_action": float(gt_action_raw[row_idx, dim]),
+                    "signed_error": float(diff[row_idx, dim]),
+                    "abs_error": float(abs_err[row_idx, dim]),
+                    "sq_error": float(sq_err[row_idx, dim]),
                 }
             )
     return records
@@ -505,6 +515,31 @@ def _align_proprio_length(proprio: torch.Tensor, target_len: int) -> torch.Tenso
     return torch.cat([proprio, last_row], dim=0)
 
 
+def _build_valid_action_mask(action_is_pad, target_len: int) -> np.ndarray:
+    """Build valid-step mask where True indicates non-pad action timesteps."""
+    if target_len <= 0:
+        return np.zeros((0,), dtype=bool)
+    if action_is_pad is None:
+        return np.ones((target_len,), dtype=bool)
+
+    if isinstance(action_is_pad, torch.Tensor):
+        is_pad = action_is_pad.detach().cpu().bool().numpy().reshape(-1)
+    else:
+        is_pad = np.asarray(action_is_pad).astype(bool).reshape(-1)
+
+    if int(is_pad.shape[0]) >= target_len:
+        return np.logical_not(is_pad[:target_len])
+
+    logger.warning(
+        "action_is_pad length (%d) < target_len (%d); marking missing tail as invalid.",
+        int(is_pad.shape[0]),
+        int(target_len),
+    )
+    valid = np.zeros((target_len,), dtype=bool)
+    valid[: int(is_pad.shape[0])] = np.logical_not(is_pad)
+    return valid
+
+
 def _save_action_error_visualizations(
     pred_action_raw: np.ndarray,
     gt_action_raw: np.ndarray,
@@ -711,13 +746,31 @@ def run_single_sample(
     overlap_steps = min(int(pred_raw_2d.shape[0]), int(gt_raw_2d.shape[0]))
     if overlap_steps <= 0:
         raise ValueError("No temporal overlap between predicted and GT actions for metric computation.")
-    pred_eval = pred_raw_2d[:overlap_steps]
-    gt_eval = gt_raw_2d[:overlap_steps]
+
+    valid_mask = _build_valid_action_mask(sample.get("action_is_pad", None), overlap_steps)
+    valid_time_steps = np.arange(overlap_steps, dtype=np.int64)[valid_mask]
+    if valid_time_steps.size == 0:
+        raise ValueError(
+            "All overlapping action steps are padded; no valid non-pad steps for metric computation."
+        )
+
+    pred_eval = pred_raw_2d[:overlap_steps][valid_mask]
+    gt_eval = gt_raw_2d[:overlap_steps][valid_mask]
     action_error_metrics = _compute_action_error_metrics(pred_eval, gt_eval)
     action_error_metrics["pred_steps"] = int(pred_raw_2d.shape[0])
     action_error_metrics["gt_steps"] = int(gt_raw_2d.shape[0])
     action_error_metrics["overlap_steps"] = int(overlap_steps)
-    error_records.extend(_build_action_error_records(pred_eval, gt_eval, sample_idx=sample_idx))
+    action_error_metrics["valid_steps"] = int(valid_time_steps.size)
+    action_error_metrics["skipped_pad_steps"] = int(overlap_steps - valid_time_steps.size)
+    action_error_metrics["valid_step_ratio"] = float(valid_time_steps.size / overlap_steps)
+    error_records.extend(
+        _build_action_error_records(
+            pred_eval,
+            gt_eval,
+            sample_idx=sample_idx,
+            time_steps=valid_time_steps,
+        )
+    )
     action_viz_paths = _save_action_error_visualizations(
         pred_eval,
         gt_eval,

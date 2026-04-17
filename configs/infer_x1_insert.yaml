@@ -8,17 +8,25 @@ defaults:
 
 # ---- Inference-specific settings ----
 inference:
-  # Path to trained checkpoint (.pt file containing mot state_dict)
-  checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/checkpoints/weights/step_006000.pt
+  # # Path to trained checkpoint (.pt file containing mot state_dict)
+  # checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/checkpoints/weights/step_006000.pt
 
-  # Path to dataset_stats.json (must match training normalization)
+  # # Path to dataset_stats.json (must match training normalization)
+  # dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/dataset_stats.json
+
+  ## chunk32
+  checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/checkpoints/weights/step_012000.pt
   dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/dataset_stats.json
+
+  ## chunk64
+  # checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-16_03-32-36/checkpoints/weights/step_012000.pt
+  # dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-16_03-32-36/dataset_stats.json
 
   # Output directory for inference results
   output_dir: ./experiments/infer/outputs/${now:%Y-%m-%d_%H-%M-%S}
 
   # Number of dataset samples to run inference on
-  num_samples: 5
+  num_samples: 100
 
   # Device for inference
   device: cuda
