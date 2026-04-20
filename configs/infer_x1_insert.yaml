@@ -4,35 +4,62 @@ defaults:
   - _self_
   - data: null
   - model: null
-  - task: x1_insert_uncond_2cam224_1e-4
+  - task: x1_0415_uncond_2cam224_1e-4
 
 # ---- Inference-specific settings ----
 inference:
+  # Server configuration (for websocket server)
+  server_host: 0.0.0.0
+  server_port: 7880
+  
   # # Path to trained checkpoint (.pt file containing mot state_dict)
   # checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/checkpoints/weights/step_006000.pt
 
   # # Path to dataset_stats.json (must match training normalization)
   # dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/dataset_stats.json
 
-  ## chunk32
-  checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/checkpoints/weights/step_012000.pt
-  dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/dataset_stats.json
+  # ## chunk32
+  # checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/checkpoints/weights/step_012000.pt
+  # dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/dataset_stats.json
 
   ## chunk64
   # checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-16_03-32-36/checkpoints/weights/step_012000.pt
   # dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-16_03-32-36/dataset_stats.json
 
+  # ## x1_0415
+  # checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM/runs/x1_0415_uncond_2cam224_1e-4/2026-04-17_02-27-34/checkpoints/weights/step_010000.pt
+  # dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM/runs/x1_0415_uncond_2cam224_1e-4/2026-04-17_02-27-34/dataset_stats.json
+
+  ## x1_0415 horizon64
+  checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM/runs/x1_0415_uncond_2cam224_1e-4/2026-04-18_06-33-25.horizon64/checkpoints/weights/step_014000.pt
+  dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM/runs/x1_0415_uncond_2cam224_1e-4/2026-04-18_06-33-25.horizon64/dataset_stats.json
+
+  # ## mix
+  # checkpoint_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM-x1-test/runs/x1_insert_uncond_2cam224_1e-4/2026-04-15_14-24-24/checkpoints/weights/step_012000.pt
+  # dataset_stats_path: /mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM/runs/x1_0415_uncond_2cam224_1e-4/2026-04-17_02-27-34/dataset_stats.json
+
+
   # Output directory for inference results
   output_dir: ./experiments/infer/outputs/${now:%Y-%m-%d_%H-%M-%S}
 
   # Number of dataset samples to run inference on
-  num_samples: 100
+  num_samples: 5
 
   # Device for inference
   device: cuda
 
+  # Action horizon (number of future action steps to predict)
+  action_horizon: 64
+
   # Number of denoising steps for action inference
   num_inference_steps: 5
+  
+  # Text embedding cache directory (from precompute_text_embeds.py)
+  # Leave empty/null if not using text embeddings from cache
+  text_embedding_cache_dir: ./data/text_embeds_cache/x1_0415
+  
+  # Context length for cached text embeddings (must match precompute settings)
+  context_len: 128
 
   # Override action horizon for infer_action (null = use sample GT action length)
   # IMPORTANT: It's recommended to set this equal to (video_prediction.num_video_frames - 1)
