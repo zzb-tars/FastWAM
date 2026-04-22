@@ -1,7 +1,7 @@
 train:
   _target_: fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
   dataset_dirs:
-    - /mnt/data/datasets/lerobot/x1/insert_0402_e298
+    - /mnt/data/zhibo.zhou/Data/Dataset/x1_0415
   shape_meta:
     images:
       - key: chest
@@ -18,7 +18,7 @@ train:
       - key: default
         raw_shape: 8
         shape: 8
-  num_frames: 33
+  num_frames: 65
   global_sample_stride: 1
   action_video_freq_ratio: 4
   video_size: [224, 448]
@@ -53,13 +53,13 @@ train:
       - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
       - _target_: torchvision.transforms.Resize
         size: [224, 224]
-  text_embedding_cache_dir: ./data/text_embeds_cache/x1_insert_0402_e298
+  text_embedding_cache_dir: ./data/text_embeds_cache/x1_0415
   context_len: 128
 
 val:
   _target_: fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
   dataset_dirs:
-    - /mnt/data/datasets/lerobot/x1/insert_0402_e298
+    - /mnt/data/zhibo.zhou/Data/Dataset/x1_0415
   shape_meta:
     images:
       - key: chest
@@ -76,7 +76,7 @@ val:
       - key: default
         raw_shape: 8
         shape: 8
-  num_frames: 33
+  num_frames: 65
   global_sample_stride: 1
   action_video_freq_ratio: 4
   video_size: [224, 448]
@@ -111,5 +111,6 @@ val:
       - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
       - _target_: torchvision.transforms.Resize
         size: [224, 224]
-  text_embedding_cache_dir: ./data/text_embeds_cache/x1_insert_0402_e298
+  text_embedding_cache_dir: ./data/text_embeds_cache/x1_0415
   context_len: 128
+

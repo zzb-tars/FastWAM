@@ -502,7 +502,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.root = Path(root) if root else HF_LEROBOT_HOME / repo_id
         self.image_transforms = image_transforms
         self.delta_timestamps = delta_timestamps
-        self.episodes = episodes
+        self.episodes = sorted(episodes) if episodes is not None else episodes
         self.tolerance_s = tolerance_s
         self.revision = revision if revision else CODEBASE_VERSION
         self.video_backend = video_backend if video_backend else get_safe_default_codec()
