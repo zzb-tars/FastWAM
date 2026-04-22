@@ -781,6 +781,17 @@ class LeRobotDataset(torch.utils.data.Dataset):
         item = {}
         for vid_key, query_ts in query_timestamps.items():
             video_path = self.root / self.meta.get_video_file_path(ep_idx, vid_key)
+
+            # v3.0 fix: video shard files contain multiple episodes concatenated.
+            # The parquet timestamps are per-episode (starting from 0), but the video
+            # timestamps are absolute within the shard file. We must add the episode's
+            # `from_timestamp` offset so we decode the correct frames.
+            from_ts_key = f"videos/{vid_key}/from_timestamp"
+            episode_meta = self.meta.episodes[int(ep_idx)]
+            if from_ts_key in episode_meta:
+                offset = float(episode_meta[from_ts_key])
+                query_ts = [ts + offset for ts in query_ts]
+
             frames = decode_video_frames(video_path, query_ts, self.tolerance_s, self.video_backend)
             item[vid_key] = frames.squeeze(0)
 
