@@ -98,7 +98,7 @@ def _load_dataset(cfg: DictConfig):
     misc.register_work_dir(output_dir)
 
     # Instantiate dataset with pretrained normalization stats
-    dataset = instantiate(data_cfg.train, pretrained_norm_stats=str(stats_path))
+    dataset = instantiate(data_cfg.val, pretrained_norm_stats=str(stats_path))
     return dataset
 
 

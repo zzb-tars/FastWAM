@@ -9,7 +9,7 @@ cd "$PROJECT_ROOT"
 # Configuration
 CHECKPOINT="${CHECKPOINT_PATH:-/mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM/runs/x1_0415_uncond_2cam224_1e-4/2026-04-18_06-33-25.horizon64/checkpoints/weights/step_014000.pt}"
 DEVICE="${FASTWAM_DEVICE:-cuda:0}"
-PORT="${FASTWAM_PORT:-8002}"
+PORT="${FASTWAM_PORT:-7880}"
 
 echo "╔════════════════════════════════════════════╗"
 echo "║     FastWAM Server - Production Mode       ║"
