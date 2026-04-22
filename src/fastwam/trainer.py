@@ -263,6 +263,30 @@ class Wan22Trainer:
             milestones=[warmup_steps],
         )
     
+    def _log_profile_data(self, profile_accumulators: dict, profile_counts: int):
+        """Log profiling data to logger and wandb."""
+        if profile_counts == 0:
+            return None
+        
+        wandb_payload = {}
+        total_profile_time = sum(profile_accumulators.values())
+        
+        for phase, total_time in profile_accumulators.items():
+            avg_time = total_time / profile_counts
+            pct_time = 100.0 * total_time / max(total_profile_time, 1e-6)
+            wandb_payload[f"profile/{phase}_ms"] = avg_time * 1000.0
+            wandb_payload[f"profile/{phase}_pct"] = pct_time
+        
+        # Log profile summary to logger
+        profile_desc = "   [profile] "
+        profile_desc += " | ".join([
+            f"{phase}: {profile_accumulators[phase]/profile_counts*1000:.2f}ms ({100*profile_accumulators[phase]/max(total_profile_time, 1e-6):.1f}%)"
+            for phase in sorted(profile_accumulators.keys())
+        ])
+        logger.info(profile_desc)
+        
+        return wandb_payload
+    
     def _estimate_eta(self):
         elapsed = max(time.perf_counter() - self.run_start_time, 1e-6)
         done_steps = max(self.global_step - self.run_start_step, 1)
@@ -666,8 +690,21 @@ class Wan22Trainer:
         data_iter = iter(self.train_loader)
         self.run_start_step = self.global_step
         self.run_start_time = time.perf_counter()
+        
+        # Initialize profiling accumulators
+        profile_accumulators = {
+            "data_load": 0.0,
+            "forward": 0.0,
+            "backward": 0.0,
+            "optim_step": 0.0,
+        }
+        profile_counts = 0
 
         while self.global_step < self.max_steps:
+            step_start = time.perf_counter()
+            
+            # === Data Loading ===
+            data_start = time.perf_counter()
             try:
                 sample = next(data_iter)
                 self.batch_in_epoch += 1
@@ -677,21 +714,46 @@ class Wan22Trainer:
                 self.train_sampler.clear_resume_batch_offset()
                 data_iter = iter(self.train_loader)
                 continue
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            data_time = time.perf_counter() - data_start
+            profile_accumulators["data_load"] += data_time
 
             with self.accelerator.accumulate(self.model):
                 train_model = self.model if hasattr(self.model, "training_loss") else self.accelerator.unwrap_model(self.model)
 
+                # === Forward Pass ===
+                forward_start = time.perf_counter()
                 with self.accelerator.autocast():
                     loss, loss_dict = train_model.training_loss(sample)
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                forward_time = time.perf_counter() - forward_start
+                profile_accumulators["forward"] += forward_time
+                
+                # === Backward Pass ===
+                backward_start = time.perf_counter()
                 self.accelerator.backward(loss)
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                backward_time = time.perf_counter() - backward_start
+                profile_accumulators["backward"] += backward_time
 
                 if self.accelerator.sync_gradients:
+                    # === Optimizer & Scheduler Step (Grad Clip + Optimizer + Scheduler + Zero Grad) ===
+                    optim_start = time.perf_counter()
                     grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                     self.optimizer.step()
                     if not self.accelerator.optimizer_step_was_skipped:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    optim_time = time.perf_counter() - optim_start
+                    profile_accumulators["optim_step"] += optim_time
+                    
                     self.global_step += 1
+                    profile_counts += 1
                     global_loss = float(
                         self.accelerator.gather(loss.detach().float().reshape(1)).mean().item()
                     )
@@ -734,6 +796,16 @@ class Wan22Trainer:
                         }
                         for key, value in global_loss_metrics.items():
                             wandb_payload[f"train/{key}"] = value
+                        
+                        # === Add profiling data to wandb ===
+                        profile_payload = self._log_profile_data(profile_accumulators, profile_counts)
+                        if profile_payload is not None:
+                            wandb_payload.update(profile_payload)
+                            # Reset accumulators
+                            for key in profile_accumulators:
+                                profile_accumulators[key] = 0.0
+                            profile_counts = 0
+                        
                         self._wandb_log(wandb_payload)
 
                     if (
