@@ -274,8 +274,8 @@ class Wan22Trainer:
         for phase, total_time in profile_accumulators.items():
             avg_time = total_time / profile_counts
             pct_time = 100.0 * total_time / max(total_profile_time, 1e-6)
-            wandb_payload[f"profile/{phase}_ms"] = avg_time * 1000.0
-            wandb_payload[f"profile/{phase}_pct"] = pct_time
+            wandb_payload[f"{phase}/ms"] = avg_time * 1000.0
+            wandb_payload[f"{phase}/pct"] = pct_time
         
         # Log profile summary to logger
         profile_desc = "   [profile] "
@@ -424,7 +424,7 @@ class Wan22Trainer:
 
         # 1. training loss
         with self.accelerator.autocast():
-            val_loss, _ = model.training_loss(sample)
+            val_loss, _, _ = model.training_loss(sample)
             val_loss = val_loss.float().item()
         
         prompt = sample["prompt"][0]
@@ -698,6 +698,15 @@ class Wan22Trainer:
             "backward": 0.0,
             "optim_step": 0.0,
         }
+        # Initialize training_loss internal profiling accumulators
+        profile_forward_accumulators = {
+            "build_inputs": 0.0,
+            "noise_scheduler": 0.0,
+            "pre_dit": 0.0,
+            "mot_forward": 0.0,
+            "post_dit": 0.0,
+            "loss_compute": 0.0,
+        }
         profile_counts = 0
 
         while self.global_step < self.max_steps:
@@ -725,11 +734,14 @@ class Wan22Trainer:
                 # === Forward Pass ===
                 forward_start = time.perf_counter()
                 with self.accelerator.autocast():
-                    loss, loss_dict = train_model.training_loss(sample)
+                    loss, loss_dict, profile_forward_data = train_model.training_loss(sample)
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
                 forward_time = time.perf_counter() - forward_start
                 profile_accumulators["forward"] += forward_time
+                # Accumulate internal training_loss profiling data
+                for key, value in profile_forward_data.items():
+                    profile_forward_accumulators[key] += value
                 
                 # === Backward Pass ===
                 backward_start = time.perf_counter()
@@ -800,11 +812,23 @@ class Wan22Trainer:
                         # === Add profiling data to wandb ===
                         profile_payload = self._log_profile_data(profile_accumulators, profile_counts)
                         if profile_payload is not None:
-                            wandb_payload.update(profile_payload)
+                            for key, value in profile_payload.items():
+                                wandb_payload[f"profile/main/{key}"] = value
                             # Reset accumulators
                             for key in profile_accumulators:
                                 profile_accumulators[key] = 0.0
-                            profile_counts = 0
+                        
+                        # === Add training_loss internal profiling data to wandb ===
+                        profile_forward_payload = self._log_profile_data(profile_forward_accumulators, profile_counts)
+                        if profile_forward_payload is not None:
+                            # Rename keys to avoid collision with outer profile data
+                            for key, value in profile_forward_payload.items():
+                                wandb_payload[f"profile/forward/{key}"] = value
+                            # Reset forward accumulators
+                            for key in profile_forward_accumulators:
+                                profile_forward_accumulators[key] = 0.0
+                        
+                        profile_counts = 0
                         
                         self._wandb_log(wandb_payload)
 

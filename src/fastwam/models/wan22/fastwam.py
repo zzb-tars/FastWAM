@@ -446,7 +446,16 @@ class FastWAM(torch.nn.Module):
         return (video_loss_token * valid).sum(dim=1) / valid_sum
 
     def training_loss(self, sample, tiled: bool = False):
+        import time
+        profile_data = {}
+        
+        # === build_inputs (VAE encode + data prep) ===
+        t0 = time.perf_counter()
         inputs = self.build_inputs(sample, tiled=tiled)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        profile_data["build_inputs"] = time.perf_counter() - t0
+        
         input_latents = inputs["input_latents"]
         batch_size = input_latents.shape[0]
         context = inputs["context"]
@@ -455,6 +464,8 @@ class FastWAM(torch.nn.Module):
         action_is_pad = inputs["action_is_pad"]
         image_is_pad = inputs["image_is_pad"]
 
+        # === Noise sampling and scheduler ===
+        t0 = time.perf_counter()
         noise_video = torch.randn_like(input_latents)
         timestep_video = self.train_video_scheduler.sample_training_t(
             batch_size=batch_size,
@@ -475,7 +486,12 @@ class FastWAM(torch.nn.Module):
         )
         noisy_action = self.train_action_scheduler.add_noise(action, noise_action, timestep_action)
         target_action = self.train_action_scheduler.training_target(action, noise_action, timestep_action)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        profile_data["noise_scheduler"] = time.perf_counter() - t0
 
+        # === pre_dit (video_expert + action_expert) ===
+        t0 = time.perf_counter()
         video_pre = self.video_expert.pre_dit(
             x=latents,
             timestep=timestep_video,
@@ -491,6 +507,9 @@ class FastWAM(torch.nn.Module):
             context=context,
             context_mask=context_mask,
         )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        profile_data["pre_dit"] = time.perf_counter() - t0
 
         video_tokens = video_pre["tokens"]
         action_tokens = action_pre["tokens"]
@@ -501,6 +520,9 @@ class FastWAM(torch.nn.Module):
             video_tokens_per_frame=int(video_pre["meta"]["tokens_per_frame"]),
             device=video_tokens.device,
         )
+        
+        # === MoT forward (most expensive) ===
+        t0 = time.perf_counter()
         tokens_out = self.mot(
             embeds_all={
                 "video": video_tokens,
@@ -526,11 +548,20 @@ class FastWAM(torch.nn.Module):
                 "action": action_pre["t_mod"],
             },
         )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        profile_data["mot_forward"] = time.perf_counter() - t0
 
+        # === post_dit ===
+        t0 = time.perf_counter()
         pred_video = self.video_expert.post_dit(tokens_out["video"], video_pre)
-
         pred_action = self.action_expert.post_dit(tokens_out["action"], action_pre)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        profile_data["post_dit"] = time.perf_counter() - t0
 
+        # === Loss computation ===
+        t0 = time.perf_counter()
         include_initial_video_step = inputs["first_frame_latents"] is None
         if inputs["first_frame_latents"] is not None:
             pred_video = pred_video[:, :, 1:]
@@ -561,11 +592,15 @@ class FastWAM(torch.nn.Module):
         loss_action = (action_loss_per_sample * action_weight).mean()
 
         loss_total = self.loss_lambda_video * loss_video + self.loss_lambda_action * loss_action
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        profile_data["loss_compute"] = time.perf_counter() - t0
+        
         loss_dict = {
             "loss_video": self.loss_lambda_video * float(loss_video.detach().item()),
             "loss_action": self.loss_lambda_action * float(loss_action.detach().item()),
         }
-        return loss_total, loss_dict
+        return loss_total, loss_dict, profile_data
 
     @torch.no_grad()
     def _predict_joint_noise(
