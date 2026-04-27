@@ -24,6 +24,7 @@ import datasets
 import numpy as np
 import packaging.version
 import PIL.Image
+import pyarrow as pa
 import torch
 import torch.utils
 import pyarrow.parquet as pq
@@ -652,13 +653,26 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
     def load_hf_dataset(self) -> datasets.Dataset:
         """hf_dataset contains all the observations, states, actions, rewards, etc."""
+        files = None
         if self.episodes is None:
             path = str(self.root / "data")
-            hf_dataset = load_dataset("parquet", data_dir=path, split="train")
+            try:
+                hf_dataset = load_dataset("parquet", data_dir=path, split="train")
+            except ValueError as error:
+                if not self._should_fallback_to_pyarrow(error):
+                    raise
+                files = sorted((self.root / "data").rglob("*.parquet"))
+                hf_dataset = self._load_hf_dataset_with_pyarrow(files)
         else:
             # 兼容点8：显式 episode 子集时，先按文件路径集合去重（适配 v3 shard）。
-            files = sorted({str(self.root / self.meta.get_data_file_path(ep_idx)) for ep_idx in self.episodes})
-            hf_dataset = load_dataset("parquet", data_files=files, split="train")
+            files = sorted({self.root / self.meta.get_data_file_path(ep_idx) for ep_idx in self.episodes})
+            try:
+                hf_dataset = load_dataset("parquet", data_files=[str(file) for file in files], split="train")
+            except ValueError as error:
+                if not self._should_fallback_to_pyarrow(error):
+                    raise
+                hf_dataset = self._load_hf_dataset_with_pyarrow(files)
+
             if self.meta._version >= packaging.version.parse("v3.0"):
                 # 兼容点9：v3.0 一个 shard 内可能包含多个 episode，
                 # 仅靠 data_files 不能精确筛到目标 episode，需要二次按 episode_index 过滤。
@@ -668,6 +682,20 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # TODO(aliberts): hf_dataset.set_format("torch")
         hf_dataset.set_transform(hf_transform_to_torch)
         return hf_dataset
+
+    @staticmethod
+    def _should_fallback_to_pyarrow(error: ValueError) -> bool:
+        message = str(error)
+        return "Feature type 'List' not found" in message
+
+    def _load_hf_dataset_with_pyarrow(self, files: list[str | Path]) -> datasets.Dataset:
+        tables = [pq.read_table(file).replace_schema_metadata(None) for file in files]
+        table = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
+        return datasets.Dataset(
+            table,
+            info=datasets.DatasetInfo(features=get_hf_features_from_features(self.features)),
+            split="train",
+        )
 
     def create_hf_dataset(self) -> datasets.Dataset:
         features = get_hf_features_from_features(self.features)
