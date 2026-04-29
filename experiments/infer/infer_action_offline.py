@@ -878,10 +878,10 @@ def run_single_sample(
                 logger.warning("  Skipped video mode %s due to error: %s", mode_name, e)
                 result[f"video_{mode_name}_error"] = str(e)
 
-        if bool(video_cfg.get("with_gt_action", True)):
-            _save_joint_mode("with_gt_action", action_for_gt)
-        if bool(video_cfg.get("with_pred_action", True)):
-            _save_joint_mode("with_pred_action", action_for_pred)
+        # if bool(video_cfg.get("with_gt_action", True)):
+        #     _save_joint_mode("with_gt_action", action_for_gt)
+        # if bool(video_cfg.get("with_pred_action", True)):
+        #     _save_joint_mode("with_pred_action", action_for_pred)
         if bool(video_cfg.get("without_action", True)):
             _save_joint_mode("without_action", None)
 
@@ -941,6 +941,9 @@ def main(cfg: DictConfig):
         sample_indices = rng.choice(len(dataset), size=min(num_samples, len(dataset)), replace=False).tolist()
 
     logger.info("Running inference on %d samples: %s", len(sample_indices), sample_indices)
+
+    # sort sample_indices
+    sample_indices.sort()
 
     all_results = []
     for i, idx in enumerate(sample_indices):

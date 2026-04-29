@@ -90,6 +90,7 @@ class Wan22Trainer:
         # Freeze non-trainable modules before optimizer/deepspeed initialization.
         # This keeps DiT (+ optional proprio encoder) as trainable when ZeRO builds optimizer state.
         self._apply_dit_only_train_mode(self.model)
+        # self._log_model_parameter_stats(self.model)
         trainable_params = list(self.model.dit.parameters())
         proprio_encoder = getattr(self.model, "proprio_encoder", None)
         if proprio_encoder is not None:
@@ -328,6 +329,44 @@ class Wan22Trainer:
         if proprio_encoder is not None:
             proprio_encoder.train()
             proprio_encoder.requires_grad_(True)
+
+    @staticmethod
+    def _count_params(params_iter):
+        total_params = 0
+        trainable_params = 0
+        for p in params_iter:
+            n = p.numel()
+            total_params += n
+            if p.requires_grad:
+                trainable_params += n
+        frozen_params = total_params - trainable_params
+        return total_params, trainable_params, frozen_params
+
+    def _log_model_parameter_stats(self, model):
+        model = self.accelerator.unwrap_model(model)
+
+        total_params, trainable_params, frozen_params = self._count_params(model.parameters())
+        logger.info(
+            "[param-stats][model] total=%d trainable=%d frozen=%d",
+            total_params,
+            trainable_params,
+            frozen_params,
+        )
+
+        for module_name, module in model.named_modules():
+            module_total, module_trainable, module_frozen = self._count_params(
+                module.parameters(recurse=False)
+            )
+            if module_total == 0:
+                continue
+            display_name = module_name if module_name else "<root>"
+            logger.info(
+                "[param-stats][module] name=%s total=%d trainable=%d frozen=%d",
+                display_name,
+                module_total,
+                module_trainable,
+                module_frozen,
+            )
 
     @staticmethod
     def _to_batched_eval_sample(sample):
