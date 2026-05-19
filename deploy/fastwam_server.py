@@ -28,6 +28,8 @@ import hydra
 import numpy as np
 import torch
 import torchvision
+from PIL import Image
+# from wandb import Image
 import websockets
 from omegaconf import DictConfig
 
@@ -39,6 +41,8 @@ if str(project_root) not in sys.path:
 
 from fastwam.utils.config_resolvers import register_default_resolvers
 from fastwam.utils.logging_config import get_logger
+
+np.set_printoptions(suppress=True, precision=6, linewidth=200)
 
 logger = get_logger(__name__)
 register_default_resolvers()
@@ -357,7 +361,7 @@ class FastWAMPolicy:
             size=(224, 224), 
             interpolation=torchvision.transforms.InterpolationMode.BILINEAR, 
             max_size=None, antialias=True)
-        image_tensor = resize_func(image_tensor)
+        # image_tensor = resize_func(image_tensor)
         return image_tensor
 
     def _stack_image(self, image_tensor_list) -> torch.Tensor:
@@ -390,24 +394,38 @@ class FastWAMPolicy:
         Returns:
             np.ndarray of shape [action_horizon, action_dim] (denormalized)
         """
+
+        def _check_input_image_np(image_np, key_name):
+            if image_np is None:
+                raise ValueError(f"obs_dict must contain '{key_name}'")
+            if image_np.dtype != np.uint8:
+                raise ValueError(f"Expected image dtype uint8, got {image_np.dtype}")
+            if image_np.shape[0] != 3 or image_np.shape[1] != 224 or image_np.shape[2] != 224:
+                raise ValueError(f"Expected image shape [3, 224, 224], got {image_np.shape}")
+
+
         ######### Extract image from observation
         image_chest_np = obs_dict.get("observation.image.chest")
+        image_left_wrist_np = obs_dict.get("observation.image.left_wrist")
         image_right_wrist_np = obs_dict.get("observation.image.right_wrist")
-        if image_chest_np is None or image_right_wrist_np is None:
-            raise ValueError("obs_dict must contain 'observation.image.chest' and 'observation.image.right_wrist'")
-        if image_chest_np.dtype != np.uint8 or image_right_wrist_np.dtype != np.uint8:
-            raise ValueError("Expected image dtype uint8, got {}".format(image_chest_np.dtype))
-        if image_chest_np.shape[0] != 3 or image_chest_np.shape[1] != 480 or image_chest_np.shape[2] != 640:
-            raise ValueError("Expected image shape [3, 480, 640], got {}".format(image_chest_np.shape))
-        if image_right_wrist_np.shape[0] != 3 or image_right_wrist_np.shape[1] != 480 or image_right_wrist_np.shape[2] != 640:
-            raise ValueError("Expected image shape [3, 480, 640], got {}".format(image_right_wrist_np.shape))
-        image_chest_tensor = self._image_transform(image_chest_np)
-        image_right_wrist_tensor = self._image_transform(image_right_wrist_np)
-        image_tensor = self._stack_image([image_chest_tensor, image_right_wrist_tensor])
+        # image_scene_fisheye_np = obs_dict.get("observation.image.scene_fisheye")
+        _check_input_image_np(image_chest_np, "observation.image.chest")
+        _check_input_image_np(image_left_wrist_np, "observation.image.left_wrist")   
+        _check_input_image_np(image_right_wrist_np, "observation.image.right_wrist")
+        # _check_input_image_np(image_scene_fisheye_np, "observation.image.scene_fisheye")
+        # image_tensor = self._stack_image([self._image_transform(image_chest_np), 
+        #                                   self._image_transform(image_left_wrist_np),
+        #                                   self._image_transform(image_right_wrist_np),
+        #                                   self._image_transform(image_scene_fisheye_np)])
+        image_tensor = self._stack_image([self._image_transform(image_chest_np), 
+                                          self._image_transform(image_left_wrist_np),
+                                          self._image_transform(image_right_wrist_np)])
         image_tensor = self._normalize_image(image_tensor)
+
+        # Image.fromarray(((image_tensor*0.5+0.5).cpu().clone().permute(1,2,0).numpy()*255).astype(np.uint8)).save("output.jpg")
         image_tensor = image_tensor.to(device=self.device, dtype=self.torch_dtype)
-        if image_tensor.ndim != 3 or image_tensor.shape[0] != 3 or image_tensor.shape[1] != 224 or image_tensor.shape[2] != 448:
-            raise ValueError(f"Expected image tensor shape [3, 224, 448], got {tuple(image_tensor.shape)}")
+        if image_tensor.ndim != 3 or image_tensor.shape[0] != 3 or image_tensor.shape[1] != 224 or image_tensor.shape[2] != 672:
+            raise ValueError(f"Expected image tensor shape [3, 224, 672], got {tuple(image_tensor.shape)}")
 
         
         ######### Proprioception (state)
@@ -456,6 +474,40 @@ class FastWAMPolicy:
             }
 
             output = self.model.infer_action(prompt=None, **infer_kwargs)
+
+            # infer_kwargs['num_video_frames'] = 5
+            # infer_kwargs['action'] = None
+            # infer_kwargs['test_action_with_infer_action'] = False
+            # infer_kwargs['prompt'] = None
+
+            # joint_out = self.model.infer_joint(**infer_kwargs)
+
+            # def _stitch_frames_vert(top_frames: list[Image.Image], bottom_frames: list[Image.Image]) -> list[Image.Image]:
+            #     """Stitch two frame lists vertically frame-by-frame (top=GT, bottom=pred).
+                
+            #     When frame counts differ, pad the shorter sequence with its last frame.
+            #     """
+            #     if len(top_frames) == 0 or len(bottom_frames) == 0:
+            #         return []
+                
+            #     num_frames = max(len(top_frames), len(bottom_frames))
+            #     stitched = []
+            #     for i in range(num_frames):
+            #         # Use last frame as padding if one sequence is shorter
+            #         top = top_frames[min(i, len(top_frames) - 1)].convert("RGB")
+            #         bottom = bottom_frames[min(i, len(bottom_frames) - 1)].convert("RGB")
+            #         if top.size != bottom.size:
+            #             bottom = bottom.resize(top.size, resample=Image.BILINEAR)
+            #         canvas = Image.new("RGB", (top.width, top.height + bottom.height))
+            #         canvas.paste(top, (0, 0))
+            #         canvas.paste(bottom, (0, top.height))
+            #         stitched.append(canvas)
+            #     return stitched
+
+            # stitched = _stitch_frames_vert(joint_out['video'], joint_out['video'])
+            # from fastwam.utils.video_io import save_mp4
+            # save_mp4(stitched, "out_video.mp4", fps=8)
+
         
         # Extract normalized action from model output
         action_tensor = output["action"]  # [action_horizon, action_dim]
@@ -472,6 +524,21 @@ class FastWAMPolicy:
                 action_denormalized = action_normalized
         else:
             action_denormalized = action_normalized
+
+        def _upsample_action(action, target_horizon):
+            """Resample action to target horizon using linear interpolation."""
+            if action.shape[0] == target_horizon:
+                _log(f"[DEBUG] Action already at target horizon {target_horizon}, no upsampling needed")
+                return action
+            _log(f"[DEBUG] Upsampling action from horizon {action.shape[0]} to {target_horizon}")
+            from scipy.interpolate import interp1d
+            x_old = np.linspace(0, 1, num=action.shape[0])
+            x_new = np.linspace(0, 1, num=target_horizon)
+            interpolator = interp1d(x_old, action, axis=0, kind='linear')
+            return interpolator(x_new)
+        
+        action_denormalized = _upsample_action(action_denormalized, target_horizon=32)
+        # print(action_denormalized[..., 0:7])
         
         return action_denormalized
 
@@ -610,6 +677,33 @@ def main(cfg: DictConfig):
     else:
         _log(f"[INFO]   text_embed_cache  = disabled")
     _log(f"[INFO]   context_len       = {infer_cfg.get('context_len', 128)}")
+
+    # policy = FastWAMPolicy(cfg)
+
+    # for idx in [31, 96, 132]:
+    #     image_chest_np = np.load(f"/mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FINAL_test_data/{idx}_image_chest.npy")
+    #     image_left_wrist_np = np.load(f"/mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FINAL_test_data/{idx}_image_left_wrist.npy")
+    #     image_right_wrist_np = np.load(f"/mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FINAL_test_data/{idx}_image_right_wrist.npy")
+    #     image_scene_fisheye_np = np.load(f"/mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FINAL_test_data/{idx}_image_scene_fisheye.npy")
+    #     state_np = np.load(f"/mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FINAL_test_data/{idx}_gt_state.npy")
+        
+
+    #     obs_dict = {
+    #         "observation.image.chest": image_chest_np,
+    #         "observation.image.left_wrist": image_left_wrist_np,
+    #         "observation.image.right_wrist": image_right_wrist_np,
+    #         "observation.image.scene_fisheye": image_scene_fisheye_np,
+    #         "state": state_np[0:1, :],
+    #         "instruction": "pick and place",
+    #     }
+    
+
+    #     action = policy.infer(obs_dict)
+    #     np.save(f'/mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FINAL_test_data/{idx}_pred_action.npy', action)
+
+
+    # return;
+
 
     srv = FastWAMServer(cfg, host=host, port=int(port))
     asyncio.run(srv.serve())

@@ -737,8 +737,8 @@ def run_single_sample(
     gt_action_raw = _denormalize_action(action_gt, gt_proprio, processor)  # [1, T_action, action_dim]
 
     # x1 gripper is stored on a 0-100 scale; normalize it to [0, 1] so it does not dominate the action error plots.
-    pred_action_raw[..., -1] = pred_action_raw[..., -1] / 100.0
-    gt_action_raw[..., -1] = gt_action_raw[..., -1] / 100.0
+    # pred_action_raw[..., -1] = pred_action_raw[..., -1] / 100.0
+    # gt_action_raw[..., -1] = gt_action_raw[..., -1] / 100.0
 
     # Action error metrics + visualizations
     pred_raw_2d = pred_action_raw.squeeze(0)
@@ -795,6 +795,7 @@ def run_single_sample(
             actions_path,
             pred_action=pred_raw_2d,
             gt_action=gt_raw_2d,
+            proprio_input=proprio_input,
             pred_action_normalized=pred_action.numpy() if isinstance(pred_action, torch.Tensor) else pred_action,
             gt_action_normalized=action_gt.numpy() if isinstance(action_gt, torch.Tensor) else action_gt,
         )

@@ -62,6 +62,19 @@ python experiments/libero/eval_libero_single.py \
   EVALUATION.task_description="pick up the orange juice and place it in the center of the floor" \
   EVALUATION.output_dir=./evaluate_results/debug_custom_task
 
+CUDA_VISIBLE_DEVICES=0 \
+python experiments/libero/eval_libero_single.py \
+  task=libero_v30_uncond_2cam224_1e-4 \
+  ckpt=/mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM/runs/libero_v30_uncond_2cam224_1e-4/2026-04-27_08-22-24/checkpoints/weights/step_020000.pt \
+  gpu_id=0 \
+  EVALUATION.dataset_stats_path=/mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM/runs/libero_v30_uncond_2cam224_1e-4/2026-04-27_08-22-24/dataset_stats.json \
+  EVALUATION.task_suite_name=libero_object \
+  EVALUATION.task_id=0 \
+  EVALUATION.num_trials=1 \
+  EVALUATION.task_description="pick up the orange juice and place it in the basket" \
+  EVALUATION.output_dir=./evaluate_results/debug_custom_task
+
+
 python scripts/precompute_text_embeds.py task=x1_insert_uncond_2cam224_1e-4
 
 
@@ -75,4 +88,12 @@ bash scripts/train_zero1.sh 8 \
   config_name=train_x1_insert_uncond_2cam224_1e-4 \
   task=x1_insert_uncond_2cam224_1e-4
 
+WANDB_API_KEY="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" \
+bash scripts/train_zero1.sh 8 \
+  config_name=train_x1_0415_uncond_2cam224_1e-4 \
+  task=x1_0415_uncond_2cam224_1e-4
+
 bash experiments/infer/run_infer.sh 
+
+
+python -m lerobot.scripts.lerobot_train   --dataset.repo_id=x1_03_26-all   --dataset.root=$HOME/data_record_24/lerobot/x1_03_26-all   --policy.type=act   --output_dir=outputs/train/act_x1_03_26-all   --policy.device=cuda   --wandb.enable=false   --policy.push_to_hub=false

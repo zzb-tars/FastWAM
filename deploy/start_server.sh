@@ -7,7 +7,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 # Configuration
-CHECKPOINT="${CHECKPOINT_PATH:-/mnt/data/zhibo.zhou/Workspaces/fastwam_ws/FastWAM/runs/x1_0415_uncond_2cam224_1e-4/2026-04-18_06-33-25.horizon64/checkpoints/weights/step_014000.pt}"
+CHECKPOINT="${CHECKPOINT_PATH:-/path/to/your/model_checkpoint.pt}"
 DEVICE="${FASTWAM_DEVICE:-cuda:0}"
 PORT="${FASTWAM_PORT:-7880}"
 
@@ -25,5 +25,4 @@ echo "      Once you see 'listening on ws://', server is ready."
 echo ""
 
 conda run -n fastwam_libero_v0 --no-capture-output python deploy/fastwam_server.py \
-    inference.checkpoint_path="$CHECKPOINT" \
     inference.device="$DEVICE"

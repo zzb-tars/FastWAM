@@ -128,6 +128,9 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
         action: torch.Tensor = lerobot_sample[lerobot_key] # [T, action_dim]
         if action.ndim == 1: # for shape of 1, like gripper
             action = action.unsqueeze(-1)
+        if "select_start_idx" in meta and "select_end_idx" in meta:
+            select_start_idx, select_end_idx = meta["select_start_idx"], meta["select_end_idx"]
+            action = action[..., select_start_idx:select_end_idx]
         assert action.shape[-1] == raw_shape, f"Action '{key}' shape {action.shape[-1]} mismatch with meta {raw_shape}."
         return action
 
@@ -137,6 +140,9 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
         if state.ndim == 1: # for shape of 1, like gripper
             state = state.unsqueeze(-1)
         # state = state[..., :-1, :]  # use state_{t} as observation_t
+        if "select_start_idx" in meta and "select_end_idx" in meta:
+            select_start_idx, select_end_idx = meta["select_start_idx"], meta["select_end_idx"]
+            state = state[..., select_start_idx:select_end_idx]
         assert state.shape[-1] == raw_shape, f"State '{key}' shape {state.shape[-1]} mismatch with meta {raw_shape}."
         return state
     
